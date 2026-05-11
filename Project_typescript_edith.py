@@ -169,6 +169,10 @@ class Parser:
         
         if token_val in ['let', 'const', 'var']:
             return self.parse_declaration()
+        elif token_val == 'function':
+            return self.parse_function()
+        elif token_val == 'return':
+            return self.parse_return()
         elif token_val == 'if':
             return self.parse_if()
         elif token_val == 'while':
@@ -205,7 +209,58 @@ class Parser:
         self.log_sintactico += "SINTACTICO: <FIN_BLOQUE>\n"
         return block_node
 
-    # --- REGLAS DE FLUJO EXISTENTES ---
+    # --- REGLAS DE FUNCIONES ---
+    def parse_function(self):
+        self.log_sintactico += "SINTACTICO: Analizando estructura 'function'\n"
+        self.advance() # Consumimos 'function'
+        
+        id_token = self.expect("Identifier")
+        node = ASTNode("DECLARACION_FUNCION", id_token.value)
+        
+        self.expect("Delimiter", "(")
+        params_node = ASTNode("PARAMETROS")
+        
+        # Leer parámetros hasta encontrar el ')'
+        while self.current_token.type != "EOF" and self.current_token.value != ")":
+            param_id = self.expect("Identifier")
+            self.expect("Delimiter", ":")
+            param_type = self.expect("DataType")
+            
+            p_node = ASTNode("PARAMETRO", param_id.value)
+            p_node.add_child(ASTNode("TIPO", param_type.value))
+            params_node.add_child(p_node)
+            
+            if self.current_token.value == ",":
+                self.advance()
+            else:
+                break
+                
+        self.expect("Delimiter", ")")
+        node.add_child(params_node)
+        
+        # Tipo de retorno opcional
+        if self.current_token.value == ":":
+            self.expect("Delimiter", ":")
+            ret_type = self.expect("DataType")
+            node.add_child(ASTNode("TIPO_RETORNO", ret_type.value))
+            
+        # Cuerpo de la función
+        body = self.parse_block()
+        node.add_child(body)
+        
+        return node
+
+    def parse_return(self):
+        self.log_sintactico += "SINTACTICO: Analizando 'return'\n"
+        self.advance()
+        node = ASTNode("RETURN")
+        if self.current_token.value != ";":
+            expr = self.parse_expression()
+            node.add_child(expr)
+        self.expect("Delimiter", ";")
+        return node
+
+    # --- REGLAS DE FLUJO ---
     def parse_if(self):
         self.log_sintactico += "SINTACTICO: Analizando estructura 'if'\n"
         self.advance() 
@@ -247,34 +302,29 @@ class Parser:
 
         return node
 
-    # --- NUEVAS REGLAS DE FLUJO: FOR, DO-WHILE, SWITCH ---
     def parse_for(self):
         self.log_sintactico += "SINTACTICO: Analizando estructura 'for'\n"
         self.advance()
         node = ASTNode("ESTRUCTURA_FOR")
         self.expect("Delimiter", "(")
 
-        # 1. Inicialización
         init_node = ASTNode("INICIALIZACION")
         if self.current_token.value in ['let', 'const', 'var']:
-            init_node.add_child(self.parse_declaration()) # Esto ya consume el ';'
+            init_node.add_child(self.parse_declaration()) 
         else:
-            init_node.add_child(self.parse_expression_statement()) # Esto también consume el ';'
+            init_node.add_child(self.parse_expression_statement())
         node.add_child(init_node)
 
-        # 2. Condición
         cond_node = ASTNode("CONDICION")
         cond_node.add_child(self.parse_expression())
         self.expect("Delimiter", ";")
         node.add_child(cond_node)
 
-        # 3. Incremento
         inc_node = ASTNode("INCREMENTO")
         inc_node.add_child(self.parse_expression())
         self.expect("Delimiter", ")")
         node.add_child(inc_node)
 
-        # 4. Cuerpo
         body_node = ASTNode("CUERPO_FOR")
         body_node.add_child(self.parse_statement())
         node.add_child(body_node)
@@ -322,7 +372,6 @@ class Parser:
                 self.expect("Delimiter", ":")
                 
                 body_node = ASTNode("CUERPO_CASO")
-                # Leer sentencias hasta encontrar el siguiente case, default, o cerrar el switch
                 while self.current_token.type != "EOF" and self.current_token.value not in ["case", "default", "}"]:
                     stmt = self.parse_statement()
                     if stmt: body_node.add_child(stmt)
@@ -380,7 +429,7 @@ class Parser:
         self.log_sintactico += f"SINTACTICO: Fin de estructura '{keyword}'\n\n"
         return node
 
-    # --- MOTOR DE EXPRESIONES MATEMÁTICAS / LÓGICAS ---
+    # --- MOTOR DE EXPRESIONES ---
     def parse_expression(self):
         node = self.parse_ternary()
         if self.current_token.value == "=":
@@ -520,8 +569,9 @@ class Parser:
             self.log_sintactico += f"SINTACTICO: Push Literal -> {token.value}\n"
             self.advance()
             return ASTNode("LITERAL", token.value)
+            
         elif token.type == "Keyword" and token.value in ["console"]:
-            # Arreglo magistral para console.log
+            # Arreglo para permitir console.log vacío o con parámetros
             self.log_sintactico += f"SINTACTICO: Detectado objeto '{token.value}'\n"
             self.advance()
             self.expect("Delimiter", ".")
@@ -529,14 +579,43 @@ class Parser:
             
             node = ASTNode("LLAMADA_FUNCION", "console.log")
             self.expect("Delimiter", "(")
-            arg = self.parse_expression()
-            node.add_child(arg)
+            
+            if self.current_token.value != ")":
+                arg = self.parse_expression()
+                node.add_child(arg)
+                while self.current_token.value == ",":
+                    self.advance()
+                    arg = self.parse_expression()
+                    node.add_child(arg)
+                    
             self.expect("Delimiter", ")")
             return node
+            
         elif token.type == "Identifier":
-            self.log_sintactico += f"SINTACTICO: Push Identificador -> {token.value}\n"
+            id_val = token.value
+            self.log_sintactico += f"SINTACTICO: Push Identificador -> {id_val}\n"
             self.advance()
-            return ASTNode("ID", token.value)
+            
+            # --- MAGIA: Detectar si el identificador es una LLAMADA A FUNCIÓN ---
+            if self.current_token.value == "(":
+                self.log_sintactico += f"SINTACTICO: Detectada llamada a función '{id_val}'\n"
+                self.advance() # Consumimos '('
+                node = ASTNode("LLAMADA_FUNCION", id_val)
+                
+                # Leer argumentos (si hay)
+                if self.current_token.value != ")":
+                    arg = self.parse_expression()
+                    node.add_child(arg)
+                    while self.current_token.value == ",":
+                        self.advance()
+                        arg = self.parse_expression()
+                        node.add_child(arg)
+                        
+                self.expect("Delimiter", ")")
+                return node
+                
+            return ASTNode("ID", id_val)
+            
         elif token.value == "(":
             self.log_sintactico += f"SINTACTICO: Delimitador '('\n"
             self.advance()
