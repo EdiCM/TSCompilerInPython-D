@@ -1,13 +1,99 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import re
 
+# --- CLASE TOKEN ---
+class Token:
+    def __init__(self, type_, value, line, column):
+        self.type = type_
+        self.value = value
+        self.line = line
+        self.column = column
+
+# --- BLOQUE 2: LEXER TYPESCRIPT (CORREGIDO) ---
+# --- BLOQUE 2: LEXER TYPESCRIPT (CORREGIDO) ---
+class Lexer:
+    def __init__(self, source):
+        self.source = source
+        self.tokens = []
+        self.errors = []
+        
+        self.datatypes = {'number', 'string', 'boolean', 'any', 'void', 'unknown', 'never', 'null', 'undefined', 'object', 'bigint'}
+        self.keywords = {'let', 'const', 'var', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'break', 'continue', 'function', 'return', 'console', 'log', 'interface', 'type', 'true', 'false'}
+
+    def tokenize(self):
+        token_specification = [
+            ('COMMENT',    r'//.*|/\*[\s\S]*?\*/'),    
+            ('NUMBER_ERR', r'\d+\.\d+\.\d+'),         
+            ('NUMBER',     r'\d+(\.\d+)?'),             
+            ('STRING',     r'("[^"]*"|\'[^\']*\'|`[^`]*`)'), 
+            ('OP_ARROW',   r'=>'),                     # Flecha de función
+            ('OP_STRICT',  r'===|!=='),                # Igualdad estricta TS
+            ('OP_NULLISH', r'\?\?'),                   # Nullish coalescing (??)
+            ('OP_OPTIONAL',r'\?\.'),                   # Optional chaining (?.)
+            ('OP_TERNARY', r'\?'),                     # Ternario (?) -> Va DESPUÉS de los otros dos
+            ('OP_REL',     r'<=|>=|==|!=|>|<'),         
+            ('OP_LOGIC',   r'&&|\|\||!'),                # Lógicos (AND, OR)
+            ('OP_INC',     r'\+\+|--'),                # Incrementos
+            ('ASSIGN',     r'='),                       
+            ('OP_ARIT',    r'[\+\-\*/%]'),              
+            ('DELIM',      r'[()\[\]\{\};,:\.]'),       
+            ('ID',         r'[a-zA-Z_][a-zA-Z0-9_]*'),  
+            ('NEWLINE',    r'\n'),                      
+            ('SKIP',       r'[ \t]+'),                  
+            ('MISMATCH',   r'.'),                       
+        ]
+        
+        tok_regex = '|'.join('(?P<%s>%s)' % pair for pair in token_specification)
+        line_num = 1
+        line_start = 0
+        
+        for mo in re.finditer(tok_regex, self.source):
+            kind = mo.lastgroup
+            value = mo.group()
+            column = mo.start() - line_start
+            
+            if kind == 'SKIP' or kind == 'COMMENT':
+                if '\n' in value: 
+                    line_num += value.count('\n')
+                continue
+            elif kind == 'NEWLINE':
+                line_start = mo.end()
+                line_num += 1
+            elif kind == 'NUMBER_ERR':
+                self.errors.append(f"Error Léxico: Número mal formado '{value}' en línea {line_num}")
+                self.tokens.append(Token("Invalid", value, line_num, column))
+            elif kind == 'ID':
+                if value in self.keywords: 
+                    t_type = "Keyword"
+                elif value in self.datatypes: 
+                    t_type = "DataType"
+                else: 
+                    t_type = "Identifier"
+                self.tokens.append(Token(t_type, value, line_num, column))
+            elif kind == 'MISMATCH':
+                self.errors.append(f"Error Léxico: Carácter ilegal '{value}' en línea {line_num}")
+                self.tokens.append(Token("Invalid", value, line_num, column))
+            else:
+                # Mapeamos los nuevos operadores a la categoría "Operator" para que en la tabla se vea limpio
+                type_map = {
+                    'OP_ARROW': 'Operator', 'OP_STRICT': 'Operator', 'OP_NULLISH': 'Operator',
+                    'OP_OPTIONAL': 'Operator', 'OP_TERNARY': 'Operator', 'OP_REL': 'Operator', 
+                    'OP_LOGIC': 'Operator', 'OP_INC': 'Operator', 'OP_ARIT': 'Operator', 
+                    'ASSIGN': 'Assignment', 'NUMBER': 'Number', 'STRING': 'String', 'DELIM': 'Delimiter'
+                }
+                self.tokens.append(Token(type_map.get(kind, kind), value, line_num, column))
+        
+        self.tokens.append(Token("EOF", "EOF", line_num, 0))
+        return self.tokens, self.errors
+
+# --- BLOQUE 1: GUI (CORREGIDA CON TODAS TUS OPCIONES) ---
 class GreenCompilerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("TypeScript Green-Compiler IDE")
         self.root.geometry("1100x700")
         
-        # Colores (Modern Green)
         self.CLR_BG = "#1e2310"
         self.CLR_PANEL = "#2d3618"
         self.CLR_EDITOR = "#fdfdfb"
@@ -17,9 +103,7 @@ class GreenCompilerGUI:
 
         self.root.configure(bg=self.CLR_BG)
         
-        # 1. Crear el Menú Superior
         self._create_menu()
-        
         self._setup_styles()
         self._create_widgets()
 
@@ -58,30 +142,35 @@ class GreenCompilerGUI:
         style.configure("Treeview.Heading", background=self.CLR_PANEL, foreground="white", relief="flat")
 
     def _create_widgets(self):
-        # --- Barra de Herramientas (Botones Rápidos) ---
+        # --- Barra de Herramientas ---
         toolbar = tk.Frame(self.root, bg=self.CLR_BG, pady=5)
-        toolbar.pack(fill=tk.X)
+        toolbar.pack(side=tk.TOP, fill=tk.X)
 
-        # Botón Run
         self.btn_run = tk.Button(toolbar, text="▶ RUN", bg=self.CLR_GREEN_BRIGHT, 
                                 fg="black", font=("Segoe UI", 9, "bold"), padx=15,
                                 command=self._run_analysis)
         self.btn_run.pack(side=tk.LEFT, padx=5)
 
-        # Botón Debug
         self.btn_debug = tk.Button(toolbar, text="🪲 DEBUG", bg=self.CLR_PANEL, 
                                   fg="white", font=("Segoe UI", 9, "bold"), padx=15)
         self.btn_debug.pack(side=tk.LEFT, padx=5)
 
-        # Botón New
         self.btn_new = tk.Button(toolbar, text="📄 NEW", bg=self.CLR_PANEL, 
                                 fg="white", font=("Segoe UI", 9, "bold"), padx=15,
                                 command=self._new_file)
         self.btn_new.pack(side=tk.LEFT, padx=5)
 
-        # --- Paneles ---
+        # --- Output Errores (Anclado abajo para que no se pierda) ---
+        output_frame = tk.Frame(self.root, bg=self.CLR_BG, height=120)
+        output_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(output_frame, text="Terminal Output", bg=self.CLR_BG, fg=self.CLR_GREEN_BRIGHT, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self.output = tk.Text(output_frame, height=6, bg="#0f1108", fg=self.CLR_ERROR, font=("Consolas", 10), state="disabled")
+        self.output.pack(fill=tk.X)
+
+        # --- Paneles Centrales ---
         main_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, bg=self.CLR_BG, sashwidth=4)
-        main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        main_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Editor
         editor_frame = tk.Frame(main_pane, bg=self.CLR_PANEL)
@@ -104,18 +193,11 @@ class GreenCompilerGUI:
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
         self.tab_tokens = self._create_token_table("Tokens")
-        self.tab_sintactico = self._create_tab_text("Sintáctico")
-        self.tab_ast = self._create_tab_text("AST (Árbol)")
-        self.tab_semantico = self._create_tab_table("Semántico")
-        self.tab_intermedio = self._create_tab_text("Cód. Intermedio")
-        self.tab_ejecucion = self._create_tab_text("Ejecución")
-
-        # Output Errores
-        output_frame = tk.Frame(self.root, bg=self.CLR_BG, height=100)
-        output_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
-        self.output = tk.Text(output_frame, height=5, bg="#0f1108", fg=self.CLR_ERROR, 
-                             font=("Consolas", 10), state="disabled")
-        self.output.pack(fill=tk.X)
+        self.txt_sintactico = self._create_tab_text("Sintáctico")
+        self.txt_ast = self._create_tab_text("AST (Árbol)")
+        self.tab_semantico = self._create_sym_table("Semántico")
+        self.txt_intermedio = self._create_tab_text("Cód. Intermedio")
+        self.txt_ejecucion = self._create_tab_text("Ejecución")
 
     def _create_tab_text(self, name):
         frame = tk.Frame(self.notebook, bg="#0f1108")
@@ -127,15 +209,15 @@ class GreenCompilerGUI:
     def _create_token_table(self, name):
         frame = tk.Frame(self.notebook, bg="#0f1108")
         self.notebook.add(frame, text=name)
-        cols = ("Línea", "Tipo", "Valor")
+        cols = ("Línea", "Pos", "Tipo", "Valor")
         table = ttk.Treeview(frame, columns=cols, show="headings")
         for col in cols:
             table.heading(col, text=col)
-            table.column(col, width=100, anchor="center")
+            table.column(col, width=80, anchor="center")
         table.pack(fill=tk.BOTH, expand=True)
         return table
 
-    def _create_tab_table(self, name):
+    def _create_sym_table(self, name):
         frame = tk.Frame(self.notebook, bg="#0f1108")
         self.notebook.add(frame, text=name)
         cols = ("Variable", "Tipo", "Valor", "Scope", "Línea")
@@ -174,9 +256,70 @@ class GreenCompilerGUI:
         self.line_nums.insert("1.0", nums)
         self.line_nums.config(state="disabled")
 
+    def _update_tab(self, widget, content):
+        widget.config(state="normal")
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, content)
+        widget.config(state="disabled")
+
     def _run_analysis(self):
-        # Aquí irá la lógica cuando la definamos
-        pass
+        # 1. Limpiar pantalla
+        for i in self.tab_tokens.get_children(): self.tab_tokens.delete(i)
+        for i in self.tab_semantico.get_children(): self.tab_semantico.delete(i)
+        
+        self.output.config(state="normal")
+        self.output.delete("1.0", tk.END)
+        
+        source = self.editor.get("1.0", tk.END).strip()
+        if not source: 
+            self.output.insert(tk.END, "⚠ No hay código para analizar.\n")
+            self.output.config(state="disabled")
+            return
+
+        # Protección para evitar que falle silenciosamente
+        try:
+            lexer = Lexer(source)
+            tokens, errors = lexer.tokenize()
+        except Exception as e:
+            self.output.insert(tk.END, f"❌ Error interno crítico en el Lexer: {e}\n")
+            self.output.config(state="disabled")
+            return
+
+        # 2. Llenar tabla de Tokens
+        for t in tokens:
+            if t.type != "EOF":
+                self.tab_tokens.insert("", tk.END, values=(t.line, t.column, t.type, t.value))
+
+       # 3. Mostrar rastro sintáctico preliminar
+        log_sint = ">>> INICIO DE ANALISIS SINTACTICO\n"
+        log_sint += ">>> ANALISIS SINTACTICO: <PROGRAMA>\n\n"
+        for t in tokens:
+            if t.type == "Keyword": 
+                log_sint += f"SINTACTICO: Analizando estructura '{t.value}'\n"
+            elif t.type == "Identifier": 
+                log_sint += f"SINTACTICO: Push Identificador -> {t.value}\n"
+            elif t.type == "DataType": 
+                log_sint += f"SINTACTICO: Tipo de dato -> {t.value}\n"
+            elif t.type == "Number" or t.type == "String" or t.type == "BooleanLiteral": 
+                log_sint += f"SINTACTICO: Push Literal -> {t.value}\n"
+            elif t.type == "Operator" or t.type == "Assignment":
+                log_sint += f"SINTACTICO: Operador '{t.value}'\n"
+            elif t.type == "Delimiter":
+                log_sint += f"SINTACTICO: Delimitador '{t.value}'\n"
+                if t.value == "{":
+                    log_sint += "SINTACTICO: <INICIO_BLOQUE>\n"
+                elif t.value == "}":
+                    log_sint += "SINTACTICO: <FIN_BLOQUE>\n"
+                    
+        self._update_tab(self.txt_sintactico, log_sint)
+
+        # 4. Mostrar errores léxicos abajo
+        if errors:
+            for err in errors: self.output.insert(tk.END, f"✗ {err}\n")
+        else:
+            self.output.insert(tk.END, "✓ Análisis léxico completado sin errores.\n")
+            
+        self.output.config(state="disabled")
 
 if __name__ == "__main__":
     root = tk.Tk()
