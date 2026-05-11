@@ -29,7 +29,6 @@ class ASTNode:
             ret += child.print_tree(level + 1)
         return ret
 
-# Excepción personalizada para manejar el "Modo Pánico"
 class ParseException(Exception):
     pass
 
@@ -110,7 +109,7 @@ class Lexer:
         return self.tokens, self.errors
 
 # ==========================================
-# BLOQUE 3: PARSER ROBUSTO (RECUPERACIÓN Y CAPAS)
+# BLOQUE 3: PARSER ROBUSTO Y COMPLETO
 # ==========================================
 class Parser:
     def __init__(self, tokens):
@@ -127,7 +126,6 @@ class Parser:
             self.current_token = self.tokens[self.pos]
 
     def expect(self, expected_type, expected_value=None):
-        """Verifica el token esperado. Si falla, activa el Modo Pánico lanzando una excepción."""
         if self.current_token.type == expected_type and (expected_value is None or self.current_token.value == expected_value):
             val = self.current_token.value
             if expected_type == "Identifier": 
@@ -145,71 +143,258 @@ class Parser:
         else:
             esperado = expected_value if expected_value else expected_type
             self.errors.append(f"Error Sintáctico: Línea {self.current_token.line}. Se esperaba '{esperado}' pero se encontró '{self.current_token.value}'.")
-            raise ParseException() # ¡Disparamos el Modo Pánico!
+            raise ParseException()
 
     def synchronize(self):
-        """Modo Recuperación: Salta tokens basura hasta encontrar el fin de la instrucción (;)"""
         self.log_sintactico += f"SINTACTICO: [!] Entrando en modo recuperación. Descartando nodo actual.\n"
         while self.current_token.type != "EOF":
-            if self.current_token.value == ";":
-                self.advance() # Consumimos el punto y coma seguro
-                self.log_sintactico += f"SINTACTICO: [!] Sincronización exitosa en punto y coma.\n\n"
+            if self.current_token.value in [";", "}"]:
+                self.advance() 
+                self.log_sintactico += f"SINTACTICO: [!] Sincronización exitosa en '{self.current_token.value}'.\n\n"
                 return
             self.advance()
 
     def parse(self):
         root = ASTNode("PROGRAMA")
-        
         while self.current_token.type != "EOF":
-            if self.current_token.type == "Keyword" and self.current_token.value in ['let', 'const', 'var']:
-                decl_node = self.parse_declaration()
-                if decl_node: # Solo se agrega si el nodo es válido (Todo o Nada)
-                    root.add_child(decl_node)
-            else:
-                self.errors.append(f"Error Sintáctico: Línea {self.current_token.line}. Instrucción no reconocida '{self.current_token.value}'.")
-                self.synchronize() # Intentamos recuperarnos
-                
+            try:
+                stmt = self.parse_statement()
+                if stmt: root.add_child(stmt)
+            except ParseException:
+                self.synchronize()
         return root, self.log_sintactico, self.errors
 
-    def parse_declaration(self):
-        """Construye una declaración. Si ocurre un ParseException, aborta y retorna None."""
-        try:
-            keyword = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Analizando estructura '{keyword}'\n"
+    def parse_statement(self):
+        token_val = self.current_token.value
+        
+        if token_val in ['let', 'const', 'var']:
+            return self.parse_declaration()
+        elif token_val == 'if':
+            return self.parse_if()
+        elif token_val == 'while':
+            return self.parse_while()
+        elif token_val == 'for':
+            return self.parse_for()
+        elif token_val == 'do':
+            return self.parse_do_while()
+        elif token_val == 'switch':
+            return self.parse_switch()
+        elif token_val in ['break', 'continue']:
+            self.log_sintactico += f"SINTACTICO: Analizando control de flujo '{token_val}'\n"
             self.advance()
+            self.expect("Delimiter", ";")
+            return ASTNode("CONTROL_FLUJO", token_val)
+        elif token_val == '{':
+            return self.parse_block()
+        else:
+            return self.parse_expression_statement()
 
-            id_token = self.expect("Identifier")
-            node = ASTNode("DECLARACION", keyword)
-            node.add_child(ASTNode("ID", id_token.value))
+    def parse_block(self):
+        self.log_sintactico += "SINTACTICO: <INICIO_BLOQUE>\n"
+        self.expect("Delimiter", "{")
+        
+        block_node = ASTNode("BLOQUE")
+        while self.current_token.type != "EOF" and self.current_token.value != "}":
+            try:
+                stmt = self.parse_statement()
+                if stmt: block_node.add_child(stmt)
+            except ParseException:
+                self.synchronize()
 
-            if self.current_token.value == ":":
+        self.expect("Delimiter", "}")
+        self.log_sintactico += "SINTACTICO: <FIN_BLOQUE>\n"
+        return block_node
+
+    # --- REGLAS DE FLUJO EXISTENTES ---
+    def parse_if(self):
+        self.log_sintactico += "SINTACTICO: Analizando estructura 'if'\n"
+        self.advance() 
+        node = ASTNode("ESTRUCTURA_IF")
+        
+        self.expect("Delimiter", "(")
+        cond_node = ASTNode("CONDICION")
+        cond_node.add_child(self.parse_expression())
+        node.add_child(cond_node)
+        self.expect("Delimiter", ")")
+
+        true_node = ASTNode("BLOQUE_TRUE")
+        true_node.add_child(self.parse_statement())
+        node.add_child(true_node)
+
+        if self.current_token.value == 'else':
+            self.log_sintactico += "SINTACTICO: Analizando estructura 'else'\n"
+            self.advance()
+            false_node = ASTNode("BLOQUE_FALSE")
+            false_node.add_child(self.parse_statement())
+            node.add_child(false_node)
+
+        return node
+
+    def parse_while(self):
+        self.log_sintactico += "SINTACTICO: Analizando estructura 'while'\n"
+        self.advance()
+        node = ASTNode("ESTRUCTURA_WHILE")
+        
+        self.expect("Delimiter", "(")
+        cond_node = ASTNode("CONDICION")
+        cond_node.add_child(self.parse_expression())
+        node.add_child(cond_node)
+        self.expect("Delimiter", ")")
+
+        body_node = ASTNode("CUERPO_WHILE")
+        body_node.add_child(self.parse_statement())
+        node.add_child(body_node)
+
+        return node
+
+    # --- NUEVAS REGLAS DE FLUJO: FOR, DO-WHILE, SWITCH ---
+    def parse_for(self):
+        self.log_sintactico += "SINTACTICO: Analizando estructura 'for'\n"
+        self.advance()
+        node = ASTNode("ESTRUCTURA_FOR")
+        self.expect("Delimiter", "(")
+
+        # 1. Inicialización
+        init_node = ASTNode("INICIALIZACION")
+        if self.current_token.value in ['let', 'const', 'var']:
+            init_node.add_child(self.parse_declaration()) # Esto ya consume el ';'
+        else:
+            init_node.add_child(self.parse_expression_statement()) # Esto también consume el ';'
+        node.add_child(init_node)
+
+        # 2. Condición
+        cond_node = ASTNode("CONDICION")
+        cond_node.add_child(self.parse_expression())
+        self.expect("Delimiter", ";")
+        node.add_child(cond_node)
+
+        # 3. Incremento
+        inc_node = ASTNode("INCREMENTO")
+        inc_node.add_child(self.parse_expression())
+        self.expect("Delimiter", ")")
+        node.add_child(inc_node)
+
+        # 4. Cuerpo
+        body_node = ASTNode("CUERPO_FOR")
+        body_node.add_child(self.parse_statement())
+        node.add_child(body_node)
+
+        return node
+
+    def parse_do_while(self):
+        self.log_sintactico += "SINTACTICO: Analizando estructura 'do-while'\n"
+        self.advance()
+        node = ASTNode("ESTRUCTURA_DO_WHILE")
+
+        body_node = ASTNode("CUERPO_DO")
+        body_node.add_child(self.parse_statement())
+        node.add_child(body_node)
+
+        self.expect("Keyword", "while")
+        self.expect("Delimiter", "(")
+        
+        cond_node = ASTNode("CONDICION")
+        cond_node.add_child(self.parse_expression())
+        node.add_child(cond_node)
+        
+        self.expect("Delimiter", ")")
+        self.expect("Delimiter", ";")
+        return node
+
+    def parse_switch(self):
+        self.log_sintactico += "SINTACTICO: Analizando estructura 'switch'\n"
+        self.advance()
+        node = ASTNode("ESTRUCTURA_SWITCH")
+
+        self.expect("Delimiter", "(")
+        expr_node = ASTNode("EXPRESION_SWITCH")
+        expr_node.add_child(self.parse_expression())
+        node.add_child(expr_node)
+        self.expect("Delimiter", ")")
+
+        self.expect("Delimiter", "{")
+        while self.current_token.type != "EOF" and self.current_token.value != "}":
+            if self.current_token.value == "case":
+                self.log_sintactico += "SINTACTICO: Analizando 'case'\n"
+                self.advance()
+                case_node = ASTNode("CASO")
+                case_node.add_child(self.parse_expression())
                 self.expect("Delimiter", ":")
-                type_token = self.expect("DataType")
-                node.add_child(ASTNode("TIPO", type_token.value))
+                
+                body_node = ASTNode("CUERPO_CASO")
+                # Leer sentencias hasta encontrar el siguiente case, default, o cerrar el switch
+                while self.current_token.type != "EOF" and self.current_token.value not in ["case", "default", "}"]:
+                    stmt = self.parse_statement()
+                    if stmt: body_node.add_child(stmt)
+                case_node.add_child(body_node)
+                node.add_child(case_node)
 
-            if self.current_token.value == "=":
-                self.expect("Assignment", "=")
-                expr_node = self.parse_expression()
-                node.add_child(expr_node)
-            elif keyword == 'const':
-                self.errors.append(f"Error Sintáctico: Línea {self.current_token.line}. La constante '{id_token.value}' debe ser inicializada.")
+            elif self.current_token.value == "default":
+                self.log_sintactico += "SINTACTICO: Analizando 'default'\n"
+                self.advance()
+                self.expect("Delimiter", ":")
+                def_node = ASTNode("DEFAULT")
+                
+                body_node = ASTNode("CUERPO_DEFAULT")
+                while self.current_token.type != "EOF" and self.current_token.value not in ["case", "default", "}"]:
+                    stmt = self.parse_statement()
+                    if stmt: body_node.add_child(stmt)
+                def_node.add_child(body_node)
+                node.add_child(def_node)
+            else:
+                self.errors.append(f"Error Sintáctico: Línea {self.current_token.line}. Se esperaba 'case' o 'default'.")
                 raise ParseException()
 
-            self.expect("Delimiter", ";")
-            self.log_sintactico += f"SINTACTICO: Fin de estructura '{keyword}'\n\n"
-            return node
+        self.expect("Delimiter", "}")
+        return node
 
-        except ParseException:
-            # Si algo falló arriba, atrapamos el error aquí, sincronizamos y abortamos el nodo.
-            self.synchronize()
-            return None
+    # --- REGLA DE VARIABLES Y EXPRESIONES GENERALES ---
+    def parse_expression_statement(self):
+        expr = self.parse_expression()
+        self.expect("Delimiter", ";")
+        return expr
 
-    # --- MOTOR DE EXPRESIONES (CAPAS JERÁRQUICAS) ---
+    def parse_declaration(self):
+        keyword = self.current_token.value
+        self.log_sintactico += f"SINTACTICO: Analizando estructura '{keyword}'\n"
+        self.advance()
+
+        id_token = self.expect("Identifier")
+        node = ASTNode("DECLARACION", keyword)
+        node.add_child(ASTNode("ID", id_token.value))
+
+        if self.current_token.value == ":":
+            self.expect("Delimiter", ":")
+            type_token = self.expect("DataType")
+            node.add_child(ASTNode("TIPO", type_token.value))
+
+        if self.current_token.value == "=":
+            self.expect("Assignment", "=")
+            expr_node = self.parse_expression()
+            node.add_child(expr_node)
+        elif keyword == 'const':
+            self.errors.append(f"Error Sintáctico: Línea {self.current_token.line}. La constante '{id_token.value}' debe inicializarse.")
+            raise ParseException()
+
+        self.expect("Delimiter", ";")
+        self.log_sintactico += f"SINTACTICO: Fin de estructura '{keyword}'\n\n"
+        return node
+
+    # --- MOTOR DE EXPRESIONES MATEMÁTICAS / LÓGICAS ---
     def parse_expression(self):
-        return self.parse_ternary() # Capa 1: Ternario
+        node = self.parse_ternary()
+        if self.current_token.value == "=":
+            op_val = self.current_token.value
+            self.log_sintactico += f"SINTACTICO: Operador de Asignación '='\n"
+            self.advance()
+            right = self.parse_expression()
+            parent = ASTNode("ASIGNACION", op_val)
+            parent.add_child(node)
+            parent.add_child(right)
+            return parent
+        return node
 
     def parse_ternary(self):
-        """Capa 1: Evalúa el operador ternario ? :"""
         node = self.parse_nullish()
         if self.current_token.value == "?":
             self.log_sintactico += f"SINTACTICO: Operador Ternario '?'\n"
@@ -217,7 +402,6 @@ class Parser:
             true_expr = self.parse_expression()
             self.expect("Delimiter", ":")
             false_expr = self.parse_expression()
-            
             parent = ASTNode("TERNARIO", "?:")
             parent.add_child(node)
             parent.add_child(true_expr)
@@ -226,7 +410,6 @@ class Parser:
         return node
 
     def parse_nullish(self):
-        """Capa 1.5: Evalúa el operador Nullish Coalescing ??"""
         node = self.parse_logical_or()
         while self.current_token.value == "??":
             op_val = self.current_token.value
@@ -240,11 +423,9 @@ class Parser:
         return node
 
     def parse_logical_or(self):
-        """Capa 2: Lógico OR (||)"""
         node = self.parse_logical_and()
         while self.current_token.value == "||":
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Lógico '{op_val}'\n"
             self.advance()
             right = self.parse_logical_and()
             parent = ASTNode("OPERACION_LOGICA", op_val)
@@ -254,11 +435,9 @@ class Parser:
         return node
 
     def parse_logical_and(self):
-        """Capa 3: Lógico AND (&&)"""
         node = self.parse_equality()
         while self.current_token.value == "&&":
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Lógico '{op_val}'\n"
             self.advance()
             right = self.parse_equality()
             parent = ASTNode("OPERACION_LOGICA", op_val)
@@ -268,11 +447,9 @@ class Parser:
         return node
 
     def parse_equality(self):
-        """Capa 4: Igualdad (===, !==, ==, !=)"""
         node = self.parse_relational()
         while self.current_token.value in ['===', '!==', '==', '!=']:
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Igualdad '{op_val}'\n"
             self.advance()
             right = self.parse_relational()
             parent = ASTNode("IGUALDAD", op_val)
@@ -282,11 +459,9 @@ class Parser:
         return node
 
     def parse_relational(self):
-        """Capa 5: Relacional (<, >, <=, >=)"""
         node = self.parse_additive()
         while self.current_token.value in ['<', '>', '<=', '>=']:
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Relacional '{op_val}'\n"
             self.advance()
             right = self.parse_additive()
             parent = ASTNode("RELACIONAL", op_val)
@@ -296,11 +471,9 @@ class Parser:
         return node
 
     def parse_additive(self):
-        """Capa 6: Sumas y Restas (+, -)"""
         node = self.parse_multiplicative()
         while self.current_token.value in ['+', '-']:
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Aritmético '{op_val}'\n"
             self.advance()
             right = self.parse_multiplicative()
             parent = ASTNode("OPERACION", op_val)
@@ -310,11 +483,9 @@ class Parser:
         return node
 
     def parse_multiplicative(self):
-        """Capa 7: Multiplicación, División y Módulo (*, /, %)"""
         node = self.parse_unary()
         while self.current_token.value in ['*', '/', '%']:
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Aritmético '{op_val}'\n"
             self.advance()
             right = self.parse_unary()
             parent = ASTNode("OPERACION", op_val)
@@ -324,10 +495,8 @@ class Parser:
         return node
 
     def parse_unary(self):
-        """Capa 8: Unarios (-, +, !, ++, --) -> ¡AQUÍ ESTÁ LA CORRECCIÓN DE ++x!"""
         if self.current_token.value in ['-', '+', '!', '++', '--']:
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Unario '{op_val}'\n"
             self.advance()
             operand = self.parse_unary()
             node = ASTNode("UNARIO", op_val)
@@ -336,11 +505,9 @@ class Parser:
         return self.parse_postfix()
 
     def parse_postfix(self):
-        """Capa 9: Incremento/Decremento Postfijo (++, --)"""
         node = self.parse_primary()
         if self.current_token.value in ['++', '--']:
             op_val = self.current_token.value
-            self.log_sintactico += f"SINTACTICO: Operador Postfijo '{op_val}'\n"
             self.advance()
             parent = ASTNode("POSTFIJO", op_val)
             parent.add_child(node)
@@ -348,12 +515,24 @@ class Parser:
         return node
 
     def parse_primary(self):
-        """Capa 10: Valores base (Literales, IDs, Paréntesis)"""
         token = self.current_token
         if token.type in ["Number", "String", "BooleanLiteral"]:
             self.log_sintactico += f"SINTACTICO: Push Literal -> {token.value}\n"
             self.advance()
             return ASTNode("LITERAL", token.value)
+        elif token.type == "Keyword" and token.value in ["console"]:
+            # Arreglo magistral para console.log
+            self.log_sintactico += f"SINTACTICO: Detectado objeto '{token.value}'\n"
+            self.advance()
+            self.expect("Delimiter", ".")
+            self.expect("Keyword", "log")
+            
+            node = ASTNode("LLAMADA_FUNCION", "console.log")
+            self.expect("Delimiter", "(")
+            arg = self.parse_expression()
+            node.add_child(arg)
+            self.expect("Delimiter", ")")
+            return node
         elif token.type == "Identifier":
             self.log_sintactico += f"SINTACTICO: Push Identificador -> {token.value}\n"
             self.advance()
