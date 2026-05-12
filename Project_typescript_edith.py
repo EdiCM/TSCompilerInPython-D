@@ -1514,7 +1514,6 @@ class GreenCompilerGUI:
         menu_terminal = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Terminal", menu=menu_terminal)
         menu_terminal.add_command(label="Run", command=self._run_analysis)
-        menu_terminal.add_command(label="Debug")
 
     def _setup_styles(self):
         style = ttk.Style()
