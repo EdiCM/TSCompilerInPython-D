@@ -243,8 +243,14 @@ class Parser:
             self.expect("Delimiter", ":")
             param_type = self.expect("DataType")
             
+            type_val = param_type.value
+            if self.current_token.value == "[":
+                self.advance()
+                self.expect("Delimiter", "]")
+                type_val += "[]"
+            
             p_node = ASTNode("PARAMETRO", param_id.value, param_id.line)
-            p_node.add_child(ASTNode("TIPO", param_type.value))
+            p_node.add_child(ASTNode("TIPO", type_val))
             params_node.add_child(p_node)
             
             if self.current_token.value == ",":
@@ -424,12 +430,20 @@ class Parser:
 
         id_token = self.expect("Identifier")
         node = ASTNode("DECLARACION", keyword, line_num)
-        node.add_child(ASTNode("ID", id_token.value))
+        
+        node.add_child(ASTNode("ID", id_token.value, id_token.line))
 
         if self.current_token.value == ":":
             self.expect("Delimiter", ":")
             type_token = self.expect("DataType")
-            node.add_child(ASTNode("TIPO", type_token.value))
+            
+            type_val = type_token.value
+            if self.current_token.value == "[":
+                self.advance()
+                self.expect("Delimiter", "]")
+                type_val += "[]"
+            
+            node.add_child(ASTNode("TIPO", type_val))
 
         if self.current_token.value == "=":
             self.expect("Assignment", "=")
@@ -628,13 +642,14 @@ class Parser:
     
         elif token.type == "Identifier":
             id_val = token.value
+            line_num = token.line 
             self.log_sintactico += f"SINTACTICO: Push Identificador -> {id_val}\n"
             self.advance()
             
             if self.current_token.value == "[":
                 self.log_sintactico += f"SINTACTICO: Acceso a índice en '{id_val}'\n"
                 self.advance()
-                node = ASTNode("ARRAY_ACCESS", id_val)
+                node = ASTNode("ARRAY_ACCESS", id_val, line_num)
                 node.add_child(self.parse_expression())
                 self.expect("Delimiter", "]")
                 return node
@@ -642,7 +657,7 @@ class Parser:
             if self.current_token.value == "(":
                 self.log_sintactico += f"SINTACTICO: Detectada llamada a función '{id_val}'\n"
                 self.advance() 
-                node = ASTNode("LLAMADA_FUNCION", id_val)
+                node = ASTNode("LLAMADA_FUNCION", id_val, line_num)
                 if self.current_token.value != ")":
                     arg = self.parse_expression()
                     node.add_child(arg)
@@ -652,7 +667,8 @@ class Parser:
                         node.add_child(arg)
                 self.expect("Delimiter", ")")
                 return node
-            return ASTNode("ID", id_val)
+                
+            return ASTNode("ID", id_val, line_num)
             
         elif token.value == "(":
             self.log_sintactico += f"SINTACTICO: Delimitador '('\n"
@@ -1668,6 +1684,11 @@ class GreenCompilerGUI:
     def _run_analysis(self):
         for i in self.tab_tokens.get_children(): self.tab_tokens.delete(i)
         for i in self.tab_semantico.get_children(): self.tab_semantico.delete(i)
+        
+        self._update_tab(self.txt_sintactico, "")
+        self._update_tab(self.txt_ast, "")
+        self._update_tab(self.txt_intermedio, "")
+        self._update_tab(self.txt_ejecucion, "")
         
         self.output.config(state="normal")
         self.output.delete("1.0", tk.END)
