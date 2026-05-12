@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import re
 
 # ==========================================
@@ -1508,8 +1508,8 @@ class GreenCompilerGUI:
 
         menu_edit = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=menu_edit)
-        menu_edit.add_command(label="Search")
-        menu_edit.add_command(label="Replace")
+        menu_edit.add_command(label="Search", command=self._search_dialog)
+        menu_edit.add_command(label="Replace", command=self._replace_dialog)
 
         menu_terminal = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Terminal", menu=menu_terminal)
@@ -1531,9 +1531,6 @@ class GreenCompilerGUI:
 
         self.btn_run = tk.Button(toolbar, text="▶ RUN", bg=self.CLR_GREEN_BRIGHT, fg="black", font=("Segoe UI", 9, "bold"), padx=15, command=self._run_analysis)
         self.btn_run.pack(side=tk.LEFT, padx=5)
-
-        self.btn_debug = tk.Button(toolbar, text="🪲 DEBUG", bg=self.CLR_PANEL, fg="white", font=("Segoe UI", 9, "bold"), padx=15)
-        self.btn_debug.pack(side=tk.LEFT, padx=5)
 
         self.btn_new = tk.Button(toolbar, text="📄 NEW", bg=self.CLR_PANEL, fg="white", font=("Segoe UI", 9, "bold"), padx=15, command=self._new_file)
         self.btn_new.pack(side=tk.LEFT, padx=5)
@@ -1632,6 +1629,42 @@ class GreenCompilerGUI:
         widget.delete("1.0", tk.END)
         widget.insert(tk.END, content)
         widget.config(state="disabled")
+
+    def _search_dialog(self):
+        """Abre un diálogo para buscar texto en el editor"""
+        search_query = simpledialog.askstring("Search", "¿Qué palabra buscas?")
+        if search_query:
+            self.editor.tag_remove('found', '1.0', tk.END)
+            
+            idx = '1.0'
+            count = 0
+            while True:
+                idx = self.editor.search(search_query, idx, nocase=1, stopindex=tk.END)
+                if not idx: break
+                
+                lastidx = f"{idx}+{len(search_query)}c"
+                self.editor.tag_add('found', idx, lastidx)
+                idx = lastidx
+                count += 1
+            
+            self.editor.tag_config('found', background=self.CLR_GREEN_BRIGHT, foreground="black")
+            if count > 0:
+                messagebox.showinfo("Search", f"Se encontraron {count} coincidencias.")
+            else:
+                messagebox.showwarning("Search", "No se encontró nada.")
+
+    def _replace_dialog(self):
+        """Abre un diálogo para buscar y reemplazar texto (•◡•) /"""
+        search_query = simpledialog.askstring("Replace", "Palabra a buscar:")
+        if not search_query: return
+        
+        replace_query = simpledialog.askstring("Replace", f"Reemplazar '{search_query}' con:")
+        if replace_query is not None:
+            content = self.editor.get("1.0", tk.END)
+            new_content = content.replace(search_query, replace_query)
+            self.editor.delete("1.0", tk.END)
+            self.editor.insert("1.0", new_content)
+            messagebox.showinfo("Replace", "¡Reemplazo completado!")
 
     def _run_analysis(self):
         for i in self.tab_tokens.get_children(): self.tab_tokens.delete(i)
