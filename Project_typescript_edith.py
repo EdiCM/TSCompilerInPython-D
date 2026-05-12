@@ -820,7 +820,8 @@ class SemanticAnalyzer:
     def visit_LITERAL(self, node):
         val = node.value
         if val in ["true", "false"]: return "boolean"
-        if val.startswith('"') or val.startswith("'"): return "string"
+        # FIX: Agregamos el backtick a la validación de strings
+        if val.startswith('"') or val.startswith("'") or val.startswith('`'): return "string"
         if re.match(r'^\d', val): return "number"
         return "any"
 
@@ -896,7 +897,252 @@ class SemanticAnalyzer:
         return t1
 
 # ==========================================
-# BLOQUE 5: GUI (INTERFAZ)
+# BLOQUE 5: GENERADOR DE CÓDIGO INTERMEDIO (VM STACK)
+# ==========================================
+class CodeGenerator:
+    def __init__(self):
+        self.code = []
+        self.label_counter = 0
+        self.loop_end_labels = [] # Pila para saber a dónde saltar con un 'break'
+
+    def new_label(self):
+        self.label_counter += 1
+        return f"L{self.label_counter}"
+
+    def emit(self, instruction):
+        self.code.append(instruction)
+
+    def generate(self, node):
+        if not node: return
+        method_name = f'gen_{node.type}'
+        generator = getattr(self, method_name, self.generic_gen)
+        generator(node)
+        return "\n".join(self.code)
+
+    def generic_gen(self, node):
+        for child in node.children:
+            self.generate(child)
+
+    def gen_PROGRAMA(self, node):
+        self.generic_gen(node)
+        self.emit("HALT")
+
+    def gen_LITERAL(self, node):
+        self.emit(f"PUSH {node.value}")
+
+    def gen_ID(self, node):
+        self.emit(f"LOAD {node.value}")
+
+    def gen_DECLARACION(self, node):
+        id_node = next((c for c in node.children if c.type == "ID"), None)
+        val_node = next((c for c in node.children if c.type not in ["ID", "TIPO"]), None)
+        if val_node:
+            self.generate(val_node)
+            self.emit(f"STORE {id_node.value}")
+
+    def gen_ASIGNACION(self, node):
+        target = node.children[0]
+        val = node.children[1]
+        self.generate(val)
+        self.emit(f"STORE {target.value}")
+
+    def gen_OPERACION(self, node):
+        self.generate(node.children[0])
+        self.generate(node.children[1])
+        ops = {'+': 'ADD', '-': 'SUB', '*': 'MUL', '/': 'DIV', '%': 'MOD'}
+        self.emit(ops.get(node.value, "UNKNOWN_OP"))
+
+    # FIX: Operaciones Lógicas (&&, ||)
+    def gen_OPERACION_LOGICA(self, node):
+        self.generate(node.children[0])
+        self.generate(node.children[1])
+        ops = {'&&': 'AND', '||': 'OR'}
+        self.emit(ops.get(node.value, "UNKNOWN_LOGIC"))
+
+    # FIX: Unarios (-10, !true)
+    def gen_UNARIO(self, node):
+        self.generate(node.children[0])
+        if node.value == "-": self.emit("NEG")
+        elif node.value == "!": self.emit("NOT")
+
+    def gen_RELACIONAL(self, node):
+        self.generate(node.children[0])
+        self.generate(node.children[1])
+        ops = {'<': 'LT', '>': 'GT', '<=': 'LE', '>=': 'GE'}
+        self.emit(ops.get(node.value, "UNKNOWN_REL"))
+
+    def gen_IGUALDAD(self, node):
+        self.generate(node.children[0])
+        self.generate(node.children[1])
+        ops = {'===': 'EQ', '==': 'EQ', '!==': 'NEQ', '!=': 'NEQ'}
+        self.emit(ops.get(node.value, "UNKNOWN_EQ"))
+
+    def gen_POSTFIJO(self, node):
+        target = node.children[0]
+        self.emit(f"LOAD {target.value}")
+        self.emit("PUSH 1")
+        if node.value == "++": self.emit("ADD")
+        elif node.value == "--": self.emit("SUB")
+        self.emit(f"STORE {target.value}")
+
+    # FIX: Funciones completas
+    def gen_DECLARACION_FUNCION(self, node):
+        l_end = self.new_label()
+        self.emit(f"JMP {l_end}") # El código global no debe entrar a la función por accidente
+        
+        self.emit(f"LABEL func_{node.value}")
+        # Los parámetros ya estarán en memoria gracias al CALL
+        block = next((c for c in node.children if c.type == "BLOQUE"), None)
+        if block:
+            self.generate(block)
+        
+        self.emit("RET") # Retorno por defecto si no hay return
+        self.emit(f"LABEL {l_end}")
+
+    def gen_RETURN(self, node):
+        if node.children:
+            self.generate(node.children[0])
+        self.emit("RET")
+
+    def gen_LLAMADA_FUNCION(self, node):
+        if node.value == "console.log":
+            for arg in node.children:
+                self.generate(arg)
+                self.emit("PRINT")
+        else:
+            # Funciones personalizadas
+            for arg in node.children:
+                self.generate(arg) # Empuja los argumentos a la pila
+            self.emit(f"CALL func_{node.value}")
+
+    # ESTRUCTURAS DE CONTROL DE FLUJO
+    def gen_CONTROL_FLUJO(self, node):
+        if node.value == "break" and self.loop_end_labels:
+            self.emit(f"JMP {self.loop_end_labels[-1]}") # Salta al final del ciclo/switch actual
+
+    def gen_ESTRUCTURA_IF(self, node):
+        cond = next((c for c in node.children if c.type == "CONDICION"), None)
+        true_b = next((c for c in node.children if c.type == "BLOQUE_TRUE"), None)
+        false_b = next((c for c in node.children if c.type == "BLOQUE_FALSE"), None)
+        
+        l_false = self.new_label()
+        l_end = self.new_label()
+        
+        self.generate(cond)
+        self.emit(f"JMPF {l_false}")
+        self.generate(true_b)
+        self.emit(f"JMP {l_end}")
+        self.emit(f"LABEL {l_false}")
+        if false_b:
+            self.generate(false_b)
+        self.emit(f"LABEL {l_end}")
+
+    def gen_ESTRUCTURA_WHILE(self, node):
+        l_start = self.new_label()
+        l_end = self.new_label()
+        
+        self.loop_end_labels.append(l_end) # Guardamos la etiqueta final por si hay un break
+        
+        self.emit(f"LABEL {l_start}")
+        cond = next((c for c in node.children if c.type == "CONDICION"), None)
+        body = next((c for c in node.children if c.type == "CUERPO_WHILE"), None)
+        
+        self.generate(cond)
+        self.emit(f"JMPF {l_end}")
+        self.generate(body)
+        self.emit(f"JMP {l_start}")
+        self.emit(f"LABEL {l_end}")
+        
+        self.loop_end_labels.pop()
+    
+    def gen_ESTRUCTURA_SWITCH(self, node):
+        l_end = self.new_label()
+        self.loop_end_labels.append(l_end)
+        
+        expr = next((c for c in node.children if c.type == "EXPRESION_SWITCH"), None)
+        cases = [c for c in node.children if c.type in ["CASO", "DEFAULT"]]
+        
+        for i, child in enumerate(cases):
+            if child.type == "CASO":
+                l_body = self.new_label()
+                l_next_comparison = self.new_label()
+                
+                # 1. Bloque de Comparación
+                self.generate(expr)
+                self.generate(child.children[0]) # Valor del case
+                self.emit("EQ")
+                self.emit(f"JMPF {l_next_comparison}") # Si no coincide, salta a comparar el siguiente
+                
+                # 2. Bloque de ejecución (aquí cae si coincide)
+                self.emit(f"LABEL {l_body}") 
+                body = next((c for c in child.children if c.type == "CUERPO_CASO"), None)
+                if body: self.generate(body)
+                
+                # Aquí es donde ocurre el fallthrough natural hacia el siguiente LABEL
+                self.emit(f"LABEL {l_next_comparison}")
+                
+            elif child.type == "DEFAULT":
+                self.emit(f"LABEL default_case")
+                body = next((c for c in child.children if c.type == "CUERPO_DEFAULT"), None)
+                if body: self.generate(body)
+
+        self.emit(f"LABEL {l_end}")
+        self.loop_end_labels.pop()
+
+    def gen_ESTRUCTURA_DO_WHILE(self, node):
+        l_start = self.new_label()
+        l_end = self.new_label()
+        
+        self.loop_end_labels.append(l_end)
+        
+        self.emit(f"LABEL {l_start}")
+        body = next((c for c in node.children if c.type == "CUERPO_DO"), None)
+        cond = next((c for c in node.children if c.type == "CONDICION"), None)
+        
+        self.generate(body)
+        self.generate(cond)
+        
+        self.emit(f"JMPF {l_end}") # Si es falso, salimos
+        self.emit(f"JMP {l_start}") # Si es verdadero, volvemos a dar la vuelta
+        self.emit(f"LABEL {l_end}")
+        
+        self.loop_end_labels.pop()
+
+    def gen_ESTRUCTURA_FOR(self, node):
+        l_start = self.new_label()
+        l_end = self.new_label()
+        
+        self.loop_end_labels.append(l_end)
+        
+        init = next((c for c in node.children if c.type == "INICIALIZACION"), None)
+        cond = next((c for c in node.children if c.type == "CONDICION"), None)
+        inc = next((c for c in node.children if c.type == "INCREMENTO"), None)
+        body = next((c for c in node.children if c.type == "CUERPO_FOR"), None)
+        
+        self.generate(init)
+        self.emit(f"LABEL {l_start}")
+        self.generate(cond)
+        self.emit(f"JMPF {l_end}")
+        self.generate(body)
+        self.generate(inc)
+        self.emit(f"JMP {l_start}")
+        self.emit(f"LABEL {l_end}")
+        
+        self.loop_end_labels.pop()
+
+    # Delegadores
+    def gen_BLOQUE(self, node): self.generic_gen(node)
+    def gen_CONDICION(self, node): self.generic_gen(node)
+    def gen_BLOQUE_TRUE(self, node): self.generic_gen(node)
+    def gen_BLOQUE_FALSE(self, node): self.generic_gen(node)
+    def gen_CUERPO_WHILE(self, node): self.generic_gen(node)
+    def gen_CUERPO_FOR(self, node): self.generic_gen(node)
+    def gen_CUERPO_DO(self, node): self.generic_gen(node)
+    def gen_INICIALIZACION(self, node): self.generic_gen(node)
+    def gen_INCREMENTO(self, node): self.generic_gen(node)
+    
+# ==========================================
+# BLOQUE 6: GUI (INTERFAZ)
 # ==========================================
 class GreenCompilerGUI:
     def __init__(self, root):
@@ -1095,17 +1341,22 @@ class GreenCompilerGUI:
                         
                     if sem_errors:
                         for err in sem_errors: self.output.insert(tk.END, f"✗ {err}\n")
+                        self._update_tab(self.txt_intermedio, "Corrija los errores semánticos para generar código.")
                     else:
-                        self.output.insert(tk.END, "✓ Análisis Léxico, Sintáctico y Semántico completados sin errores.\n")
+                        # --- GENERADOR DE CÓDIGO INTERMEDIO ---
+                        generator = CodeGenerator()
+                        asm_code = generator.generate(ast_root)
+                        self._update_tab(self.txt_intermedio, asm_code)
+                        
+                        self.output.insert(tk.END, "✓ Análisis completo. Código intermedio generado con éxito.\n")
             else:
                 for err in lex_errors: self.output.insert(tk.END, f"✗ {err}\n")
-                self._update_tab(self.txt_sintactico, "El Parser no se ejecutó debido a errores léxicos previos.")
+                self._update_tab(self.txt_sintactico, "El Parser no se ejecutó debido a errores léxicos.")
                 self._update_tab(self.txt_ast, "")
+                self._update_tab(self.txt_intermedio, "")
 
         except Exception as e:
             self.output.insert(tk.END, f"❌ Error interno crítico: {e}\n")
-            
-        self.output.config(state="disabled")
 
 if __name__ == "__main__":
     root = tk.Tk()
