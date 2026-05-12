@@ -988,15 +988,22 @@ class CodeGenerator:
     # FIX: Funciones completas
     def gen_DECLARACION_FUNCION(self, node):
         l_end = self.new_label()
-        self.emit(f"JMP {l_end}") # El código global no debe entrar a la función por accidente
+        self.emit(f"JMP {l_end}") 
         
         self.emit(f"LABEL func_{node.value}")
-        # Los parámetros ya estarán en memoria gracias al CALL
+        
+        # --- NUEVO: La función toma sus parámetros de la pila ---
+        params_node = next((c for c in node.children if c.type == "PARAMETROS"), None)
+        if params_node:
+            # Los sacamos en orden inverso (de último a primero)
+            for p in reversed(params_node.children):
+                self.emit(f"STORE {p.value}")
+        
         block = next((c for c in node.children if c.type == "BLOQUE"), None)
         if block:
             self.generate(block)
         
-        self.emit("RET") # Retorno por defecto si no hay return
+        self.emit("RET") 
         self.emit(f"LABEL {l_end}")
 
     def gen_RETURN(self, node):
@@ -1140,9 +1147,141 @@ class CodeGenerator:
     def gen_CUERPO_DO(self, node): self.generic_gen(node)
     def gen_INICIALIZACION(self, node): self.generic_gen(node)
     def gen_INCREMENTO(self, node): self.generic_gen(node)
-    
+
+import shlex # Necesario para leer strings con espacios correctamente
+
 # ==========================================
-# BLOQUE 6: GUI (INTERFAZ)
+# BLOQUE 6: MÁQUINA VIRTUAL (VIRTUAL MACHINE)
+# ==========================================
+class VirtualMachine:
+    def __init__(self, asm_code):
+        self.instructions = asm_code.strip().split('\n')
+        self.stack = []
+        self.memory = {}
+        self.ip = 0 
+        self.labels = {}
+        self.call_stack = [] # ¡FIX: Pila de llamadas para funciones!
+        self.output_log = []
+        
+        for i, line in enumerate(self.instructions):
+            # Usamos shlex para no romper strings con espacios
+            parts = shlex.split(line)
+            if not parts: continue
+            if parts[0] == "LABEL":
+                self.labels[parts[1]] = i
+
+    def run(self):
+        self.output_log.append(">>> INICIO DE EJECUCIÓN VM\n")
+        
+        # Dentro del while de run() en VirtualMachine
+        while self.ip < len(self.instructions):
+            line = self.instructions[self.ip]
+            try:
+                parts = shlex.split(line)
+            except ValueError:
+                # Si shlex falla por comillas mal cerradas o complejas, 
+                # hacemos un split básico y limpiamos las comillas a mano
+                parts = line.split(maxsplit=1)
+            if not parts: self.ip += 1; continue
+                    
+            op = parts[0]
+            
+            try:
+                if op == "PUSH":
+                    val = parts[1]
+                    if val == "true": self.stack.append(True)
+                    elif val == "false": self.stack.append(False)
+                    # shlex ya quita las comillas automáticamente
+                    elif not any(c.isalpha() for c in val) or '.' in val:
+                        try: self.stack.append(float(val) if '.' in val else int(val))
+                        except: self.stack.append(val)
+                    else:
+                        self.stack.append(val)
+                
+                elif op == "LOAD":
+                    var_name = parts[1]
+                    self.stack.append(self.memory.get(var_name, 0))
+                
+                elif op == "STORE":
+                    var_name = parts[1]
+                    self.memory[var_name] = self.stack.pop()
+                
+                elif op == "ADD":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a + b)
+                elif op == "SUB":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a - b)
+                elif op == "MUL":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a * b)
+                elif op == "DIV":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a / b)
+                elif op == "NEG":
+                    self.stack.append(-self.stack.pop())
+                
+                elif op == "EQ":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a == b)
+                elif op == "NEQ":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a != b)
+                elif op == "LT":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a < b)
+                elif op == "GT":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a > b)
+                elif op == "NOT":
+                    self.stack.append(not self.stack.pop())
+                elif op == "AND":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a and b)
+                elif op == "OR":
+                    b, a = self.stack.pop(), self.stack.pop()
+                    self.stack.append(a or b)
+                
+                elif op == "JMP":
+                    self.ip = self.labels[parts[1]]
+                    continue
+                elif op == "JMPF":
+                    condition = self.stack.pop()
+                    if not condition:
+                        self.ip = self.labels[parts[1]]
+                        continue
+                
+                # --- FIX: IMPLEMENTACIÓN DE FUNCIONES ---
+                elif op == "CALL":
+                    self.call_stack.append(self.ip + 1) # Guardamos a dónde volver
+                    self.ip = self.labels[parts[1]] # Saltamos a la función
+                    continue
+                
+                elif op == "RET":
+                    if self.call_stack:
+                        self.ip = self.call_stack.pop() # Volvemos a donde nos llamaron
+                        continue
+                    else:
+                        break # Fin del programa si no hay a dónde volver
+
+                elif op == "PRINT":
+                    val = self.stack.pop()
+                    self.output_log.append(f"[CONSOLE]: {val}")
+                
+                elif op == "HALT":
+                    break
+                    
+            except Exception as e:
+                self.output_log.append(f"❌ ERROR EN VM (IP {self.ip}): {e}")
+                break
+                
+            self.ip += 1
+            
+        self.output_log.append("\n>>> EJECUCIÓN FINALIZADA")
+        return "\n".join(self.output_log)
+       
+# ==========================================
+# BLOQUE 7: GUI (INTERFAZ)
 # ==========================================
 class GreenCompilerGUI:
     def __init__(self, root):
@@ -1348,7 +1487,12 @@ class GreenCompilerGUI:
                         asm_code = generator.generate(ast_root)
                         self._update_tab(self.txt_intermedio, asm_code)
                         
-                        self.output.insert(tk.END, "✓ Análisis completo. Código intermedio generado con éxito.\n")
+                        # --- NUEVO: MÁQUINA VIRTUAL (EJECUCIÓN) ---
+                        vm = VirtualMachine(asm_code)
+                        resultado_ejecucion = vm.run()
+                        self._update_tab(self.txt_ejecucion, resultado_ejecucion)
+                        
+                        self.output.insert(tk.END, "✓ Compilación y Ejecución completadas con éxito.\n")
             else:
                 for err in lex_errors: self.output.insert(tk.END, f"✗ {err}\n")
                 self._update_tab(self.txt_sintactico, "El Parser no se ejecutó debido a errores léxicos.")
