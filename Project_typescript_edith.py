@@ -3,7 +3,10 @@ from tkinter import ttk, messagebox, filedialog
 import re
 
 # ==========================================
-# BLOQUE 1: ESTRUCTURAS BÁSICAS
+# ✧ BLOQUE 1: ESTRUCTURAS BÁSICAS ✧
+# Aquí defino las clases base para el compilador (Token y ASTNode). 
+# ASTNode es la estructura principal para armar el árbol sintáctico abstractico 
+# y poder recorrerlo en las siguientes fases. (◕‿◕)♡
 # ==========================================
 class Token:
     def __init__(self, type_, value, line, column):
@@ -34,7 +37,10 @@ class ParseException(Exception):
     pass
 
 # ==========================================
-# BLOQUE 2: LEXER TYPESCRIPT 
+# ✧ BLOQUE 2: ANALIZADOR LÉXICO (LEXER) ✧
+# Se encarga de leer el código fuente y separarlo en tokens usando regex.
+# Soporta palabras reservadas, operadores, strings con escapes y literales 
+# propios de TS como null y undefined.
 # ==========================================
 class Lexer:
     def __init__(self, source):
@@ -50,7 +56,7 @@ class Lexer:
             ('COMMENT',    r'//.*|/\*[\s\S]*?\*/'),    
             ('NUMBER_ERR', r'\d+\.\d+\.\d+'),         
             ('NUMBER',     r'\d+(\.\d+)?'),             
-            ('STRING',     r'("[^"]*"|\'[^\']*\'|`[^`]*`)'), 
+            ('STRING',     r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`)'), 
             ('OP_ARROW',   r'=>'),                     
             ('OP_STRICT',  r'===|!=='),                
             ('OP_NULLISH', r'\?\?'),                   
@@ -68,6 +74,11 @@ class Lexer:
             ('MISMATCH',   r'.'),                       
         ]
         
+        self.datatypes = {'number', 'string', 'boolean', 'any', 'void', 'unknown', 'never', 'object', 'bigint'}
+        self.keywords = {'let', 'const', 'var', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 
+                         'break', 'continue', 'function', 'return', 'console', 'log', 'interface', 'type', 
+                         'true', 'false', 'null', 'undefined'}
+
         tok_regex = '|'.join('(?P<%s>%s)' % pair for pair in token_specification)
         line_num = 1
         line_start = 0
@@ -88,7 +99,10 @@ class Lexer:
                 self.tokens.append(Token("Invalid", value, line_num, column))
             elif kind == 'ID':
                 if value in self.keywords: 
-                    t_type = "BooleanLiteral" if value in ("true", "false") else "Keyword"
+                    if value in ("true", "false", "null", "undefined"):
+                        t_type = "BooleanLiteral" if value in ("true", "false") else "NullLiteral"
+                    else:
+                        t_type = "Keyword"
                 elif value in self.datatypes: 
                     t_type = "DataType"
                 else: 
@@ -110,7 +124,10 @@ class Lexer:
         return self.tokens, self.errors
 
 # ==========================================
-# BLOQUE 3: PARSER ROBUSTO Y COMPLETO
+# ✧ BLOQUE 3: ANALIZADOR SINTÁCTICO (PARSER) ✧
+# Toma los tokens y construye el AST. Implementa recuperación de errores
+# con 'panic mode' (synchronize) para no detenerse al primer fallo. 
+# Soporta arreglos, if, for, while, do-while, switch y ternarios.
 # ==========================================
 class Parser:
     def __init__(self, tokens):
@@ -426,7 +443,6 @@ class Parser:
         self.log_sintactico += f"SINTACTICO: Fin de estructura '{keyword}'\n\n"
         return node
 
-    # --- MOTOR DE EXPRESIONES ---
     def parse_expression(self):
         node = self.parse_ternary()
         if self.current_token.value == "=":
@@ -434,7 +450,12 @@ class Parser:
             self.log_sintactico += f"SINTACTICO: Operador de Asignación '='\n"
             self.advance()
             right = self.parse_expression()
-            parent = ASTNode("ASIGNACION", op_val)
+            
+            if node.type == "ARRAY_ACCESS":
+                parent = ASTNode("ASIGNACION_ARREGLO", "=", node.line)
+            else:
+                parent = ASTNode("ASIGNACION", "=", node.line)
+                
             parent.add_child(node)
             parent.add_child(right)
             return parent
@@ -543,9 +564,10 @@ class Parser:
     def parse_unary(self):
         if self.current_token.value in ['-', '+', '!', '++', '--']:
             op_val = self.current_token.value
+            line = self.current_token.line
             self.advance()
             operand = self.parse_unary()
-            node = ASTNode("UNARIO", op_val)
+            node = ASTNode("UNARIO", op_val, line)
             node.add_child(operand)
             return node
         return self.parse_postfix()
@@ -567,6 +589,18 @@ class Parser:
             self.advance()
             return ASTNode("LITERAL", token.value)
             
+        elif token.value == "[":
+            self.log_sintactico += "SINTACTICO: Analizando arreglo literal '['\n"
+            self.advance()
+            node = ASTNode("ARRAY_LITERAL")
+            if self.current_token.value != "]":
+                node.add_child(self.parse_expression())
+                while self.current_token.value == ",":
+                    self.advance()
+                    node.add_child(self.parse_expression())
+            self.expect("Delimiter", "]")
+            return node
+            
         elif token.type == "Keyword" and token.value in ["console"]:
             self.log_sintactico += f"SINTACTICO: Detectado objeto '{token.value}'\n"
             self.advance()
@@ -586,17 +620,29 @@ class Parser:
                     
             self.expect("Delimiter", ")")
             return node
-            
+        
+        elif token.type == "NullLiteral":
+            self.log_sintactico += f"SINTACTICO: Push Literal Nulo -> {token.value}\n"
+            self.advance()
+            return ASTNode("LITERAL", token.value, token.line)
+    
         elif token.type == "Identifier":
             id_val = token.value
             self.log_sintactico += f"SINTACTICO: Push Identificador -> {id_val}\n"
             self.advance()
             
+            if self.current_token.value == "[":
+                self.log_sintactico += f"SINTACTICO: Acceso a índice en '{id_val}'\n"
+                self.advance()
+                node = ASTNode("ARRAY_ACCESS", id_val)
+                node.add_child(self.parse_expression())
+                self.expect("Delimiter", "]")
+                return node
+
             if self.current_token.value == "(":
                 self.log_sintactico += f"SINTACTICO: Detectada llamada a función '{id_val}'\n"
                 self.advance() 
                 node = ASTNode("LLAMADA_FUNCION", id_val)
-                
                 if self.current_token.value != ")":
                     arg = self.parse_expression()
                     node.add_child(arg)
@@ -604,10 +650,8 @@ class Parser:
                         self.advance()
                         arg = self.parse_expression()
                         node.add_child(arg)
-                        
                 self.expect("Delimiter", ")")
                 return node
-                
             return ASTNode("ID", id_val)
             
         elif token.value == "(":
@@ -622,7 +666,10 @@ class Parser:
 
 
 # ==========================================
-# BLOQUE 4: ANALIZADOR SEMÁNTICO (TIPOS Y FUNCIONES)
+# ✧ BLOQUE 4: ANALIZADOR SEMÁNTICO Y TABLA DE SÍMBOLOS ✧
+# Valida que el código tenga sentido lógico: verifica tipos de datos, 
+# alcances (scopes locales/globales), firmas de funciones y tiene protección 
+# estática contra posibles bucles infinitos.
 # ==========================================
 class SymbolTable:
     def __init__(self):
@@ -639,7 +686,6 @@ class SymbolTable:
             self.scopes.pop()
             self.current_scope_level -= 1
 
-    # Inyectamos param_signature para recordar qué pide la función
     def define(self, name, type_, value, line, param_signature=None):
         if name in self.scopes[self.current_scope_level]:
             return False 
@@ -658,8 +704,8 @@ class SemanticAnalyzer:
     def __init__(self):
         self.sym_table = SymbolTable()
         self.errors = []
-        self.loop_depth = 0 # Contador para saber si estamos dentro de un ciclo
-        self.current_func_ret_type = None # Para validar qué tipo debe tener el 'return'
+        self.loop_depth = 0 
+        self.current_func_ret_type = None 
 
     def analyze(self, ast_root):
         if ast_root: self.visit(ast_root)
@@ -685,7 +731,6 @@ class SemanticAnalyzer:
         self.sym_table.exit_scope()
         return "void"
 
-    # --- CONTROL DE FLUJO Y LOOPS ---
     def visit_ESTRUCTURA_WHILE(self, node):
         self.loop_depth += 1
         self.generic_visit(node)
@@ -707,6 +752,18 @@ class SemanticAnalyzer:
     def visit_ESTRUCTURA_FOR(self, node):
         self.sym_table.enter_scope()
         self.loop_depth += 1
+        
+        init_node = next((c for c in node.children if c.type == "INICIALIZACION"), None)
+        control_var = None
+        if init_node and init_node.children:
+            decl = init_node.children[0] 
+            id_node = next((c for c in decl.children if c.type == "ID"), None)
+            if id_node: control_var = id_node.value 
+
+        body_node = next((c for c in node.children if c.type == "CUERPO_FOR"), None)
+        if control_var and body_node:
+            self._check_infinite_loop(body_node, control_var)
+            
         for child in node.children:
             if child.type == "CUERPO_FOR":
                 block = next((c for c in child.children if c.type == "BLOQUE"), None)
@@ -715,17 +772,27 @@ class SemanticAnalyzer:
                 else: self.visit(child)
             else:
                 self.visit(child)
+                
         self.loop_depth -= 1
         self.sym_table.exit_scope()
         return "void"
 
+    def _check_infinite_loop(self, node, var_name):
+        """Busca si la variable de control se altera dentro del cuerpo."""
+        if not node: return
+        if node.type == "ASIGNACION":
+            target = node.children[0]
+            if target.type == "ID" and target.value == var_name:
+                self.errors.append(f"ADVERTENCIA SEMÁNTICA: La variable de control '{var_name}' "
+                                   f"está siendo modificada dentro del bucle. Posible bucle infinito.")
+        for child in node.children:
+            self._check_infinite_loop(child, var_name)
+
     def visit_CONTROL_FLUJO(self, node):
-        # Valida que el break/continue no ande suelto por ahí
         if self.loop_depth == 0:
             self.errors.append(f"Error Semántico: Línea {node.line}. '{node.value}' solo puede usarse dentro de un ciclo o switch.")
         return "void"
 
-    # --- DECLARACIONES ---
     def visit_DECLARACION(self, node):
         id_node = next((c for c in node.children if c.type == "ID"), None)
         type_node = next((c for c in node.children if c.type == "TIPO"), None)
@@ -747,7 +814,6 @@ class SemanticAnalyzer:
         ret_node = next((c for c in node.children if c.type == "TIPO_RETORNO"), None)
         ret_type = ret_node.value if ret_node else "void"
         
-        # 1. Guardar la firma (tipos de parámetros)
         params_node = next((c for c in node.children if c.type == "PARAMETROS"), None)
         param_signature = []
         if params_node:
@@ -760,7 +826,6 @@ class SemanticAnalyzer:
         
         self.sym_table.enter_scope()
         
-        # 2. Guardar estado de retorno para validar adentro
         self.current_func_ret_type = ret_type 
         
         if params_node:
@@ -773,11 +838,10 @@ class SemanticAnalyzer:
             for child in block.children: self.visit(child)
             
         self.sym_table.exit_scope()
-        self.current_func_ret_type = None # Limpiamos al salir
+        self.current_func_ret_type = None 
         return "void"
 
     def visit_RETURN(self, node):
-        # Evitar usar 'return' fuera de una función
         if self.current_func_ret_type is None:
             self.errors.append(f"Error Semántico: Línea {node.line}. 'return' no permitido fuera de una función.")
             return "void"
@@ -786,7 +850,6 @@ class SemanticAnalyzer:
         if node.children:
             ret_type = self.visit(node.children[0])
             
-        # Comparar el tipo de retorno de la expresión con el prometido por la función
         if ret_type != self.current_func_ret_type and self.current_func_ret_type != "any" and ret_type != "any":
             self.errors.append(f"Error Semántico: Línea {node.line}. La función espera retornar '{self.current_func_ret_type}' pero retorna '{ret_type}'.")
         return ret_type
@@ -804,11 +867,9 @@ class SemanticAnalyzer:
         expected_params = sym.get('params') or []
         args = node.children
         
-        # 1. Validar cantidad de argumentos
         if len(args) != len(expected_params):
             self.errors.append(f"Error Semántico: Línea {node.line}. La función '{node.value}' espera {len(expected_params)} argumentos, pero recibió {len(args)}.")
         else:
-            # 2. Validar el tipo de cada argumento
             for i in range(len(args)):
                 arg_type = self.visit(args[i])
                 if expected_params[i] != "any" and arg_type != "any" and arg_type != expected_params[i]:
@@ -816,11 +877,11 @@ class SemanticAnalyzer:
                     
         return sym['type'].split("->")[-1]
 
-    # --- EXPRESIONES BÁSICAS ---
     def visit_LITERAL(self, node):
         val = node.value
+        if val in ["null", "undefined"]:
+            return "null"  
         if val in ["true", "false"]: return "boolean"
-        # FIX: Agregamos el backtick a la validación de strings
         if val.startswith('"') or val.startswith("'") or val.startswith('`'): return "string"
         if re.match(r'^\d', val): return "number"
         return "any"
@@ -836,11 +897,9 @@ class SemanticAnalyzer:
         left_t = self.visit(node.children[0])
         right_t = self.visit(node.children[1])
         
-        # NUEVO: Permitir concatenación de strings si el operador es '+'
         if node.value == "+" and left_t == "string" and right_t == "string":
             return "string"
             
-        # Regla original: Todo lo demás requiere números
         if left_t != "number" or right_t != "number":
             self.errors.append(f"Error Semántico: Línea {node.line}. Operación '{node.value}' no válida entre '{left_t}' y '{right_t}'.")
             return "any"
@@ -890,20 +949,62 @@ class SemanticAnalyzer:
         return target_t
 
     def visit_TERNARIO(self, node):
-        self.visit(node.children[0]) 
-        t1 = self.visit(node.children[1])
-        t2 = self.visit(node.children[2])
-        if t1 != t2: return "any"
-        return t1
+        cond_type = self.visit(node.children[0])
+        true_type = self.visit(node.children[1])
+        false_type = self.visit(node.children[2])
+        
+        if true_type != false_type:
+            return "any" 
+        return true_type
+    
+    def visit_ARRAY_LITERAL(self, node):
+        if not node.children:
+            return "any[]"
+        
+        first_type = self.visit(node.children[0])
+        for child in node.children[1:]:
+            current_type = self.visit(child)
+            if current_type != first_type:
+                return "any[]"
+        
+        return f"{first_type}[]"
 
+    def visit_ARRAY_ACCESS(self, node):
+        sym = self.sym_table.lookup(node.value)
+        if not sym:
+            self.errors.append(f"Error Semántico: Línea {node.line}. Arreglo '{node.value}' no definido.")
+            return "any"
+        
+        index_type = self.visit(node.children[0])
+        if index_type != "number":
+            self.errors.append(f"Error Semántico: Línea {node.line}. El índice del arreglo debe ser 'number', no '{index_type}'.")
+        
+        base_type = sym['type'].replace("[]", "")
+        return base_type
+
+    def visit_NULLISH(self, node):
+        left_type = self.visit(node.children[0])
+        right_type = self.visit(node.children[1])
+        return left_type if left_type != "void" else right_type
+
+    def visit_ASIGNACION_ARREGLO(self, node):
+        target_type = self.visit(node.children[0])
+        value_type = self.visit(node.children[1])
+        
+        if target_type != value_type and target_type != "any":
+            self.errors.append(f"Error Semántico: Línea {node.line}. No se puede asignar '{value_type}' al elemento del arreglo de tipo '{target_type}'.")
+        return target_type
 # ==========================================
-# BLOQUE 5: GENERADOR DE CÓDIGO INTERMEDIO (VM STACK)
+# ✧ BLOQUE 5: GENERADOR DE CÓDIGO INTERMEDIO ✧
+# Traduce el AST a instrucciones tipo ensamblador para una máquina de pila.
+# Maneja la creación de etiquetas (labels), saltos lógicos (JMP) y las 
+# instrucciones de acceso y mutación de arreglos.✧
 # ==========================================
 class CodeGenerator:
     def __init__(self):
         self.code = []
         self.label_counter = 0
-        self.loop_end_labels = [] # Pila para saber a dónde saltar con un 'break'
+        self.loop_end_labels = [] 
 
     def new_label(self):
         self.label_counter += 1
@@ -946,24 +1047,27 @@ class CodeGenerator:
         self.generate(val)
         self.emit(f"STORE {target.value}")
 
+    def gen_ARRAY_LITERAL(self, node):
+        for child in node.children:
+            self.generate(child)
+        self.emit(f"MAKE_ARR {len(node.children)}")
+    
+    def gen_ARRAY_ACCESS(self, node):
+        self.generate(node.children[0])          
+        self.emit(f"LOAD_ARR {node.value}")     
+
     def gen_OPERACION(self, node):
         self.generate(node.children[0])
         self.generate(node.children[1])
         ops = {'+': 'ADD', '-': 'SUB', '*': 'MUL', '/': 'DIV', '%': 'MOD'}
         self.emit(ops.get(node.value, "UNKNOWN_OP"))
 
-    # FIX: Operaciones Lógicas (&&, ||)
     def gen_OPERACION_LOGICA(self, node):
         self.generate(node.children[0])
         self.generate(node.children[1])
         ops = {'&&': 'AND', '||': 'OR'}
         self.emit(ops.get(node.value, "UNKNOWN_LOGIC"))
 
-    # FIX: Unarios (-10, !true)
-    def gen_UNARIO(self, node):
-        self.generate(node.children[0])
-        if node.value == "-": self.emit("NEG")
-        elif node.value == "!": self.emit("NOT")
 
     def gen_RELACIONAL(self, node):
         self.generate(node.children[0])
@@ -985,17 +1089,66 @@ class CodeGenerator:
         elif node.value == "--": self.emit("SUB")
         self.emit(f"STORE {target.value}")
 
-    # FIX: Funciones completas
+    def gen_ASIGNACION_ARREGLO(self, node):
+        target = node.children[0] 
+        val = node.children[1]    
+        
+        self.generate(val)
+        self.generate(target.children[0])
+        self.emit(f"STORE_ARR {target.value}")
+
+    def gen_TERNARIO(self, node):
+        l_false = self.new_label()
+        l_end = self.new_label()
+        
+        self.generate(node.children[0]) 
+        self.emit(f"JMPF {l_false}")    
+        
+        self.generate(node.children[1]) 
+        self.emit(f"JMP {l_end}")      
+        
+        self.emit(f"LABEL {l_false}")
+        self.generate(node.children[2]) 
+        self.emit(f"LABEL {l_end}")
+
+    def gen_NULLISH(self, node):
+        l_right = self.new_label()
+        l_end = self.new_label()
+        self.generate(node.children[0])
+        self.emit("CLON")
+        self.emit("PUSH null")
+        self.emit("EQ")             
+        self.emit(f"JMPT {l_right}") 
+        self.emit("POP")            
+        self.emit(f"JMP {l_end}")
+        self.emit(f"LABEL {l_right}")
+        self.emit("POP")            
+        self.generate(node.children[1])
+        self.emit(f"LABEL {l_end}")
+
+    def gen_UNARIO(self, node):
+        operand = node.children[0]
+        if node.value in ["++", "--"]:
+            self.emit(f"LOAD {operand.value}")
+            self.emit("PUSH 1")
+            self.emit("ADD" if node.value == "++" else "SUB")
+            self.emit(f"STORE {operand.value}")
+            self.emit(f"LOAD {operand.value}") 
+        elif node.value == "-":
+            self.generate(operand)
+            self.emit("NEG")
+        elif node.value == "!":
+            self.generate(operand)
+            self.emit("NOT")
+
     def gen_DECLARACION_FUNCION(self, node):
         l_end = self.new_label()
         self.emit(f"JMP {l_end}") 
         
         self.emit(f"LABEL func_{node.value}")
         
-        # --- NUEVO: La función toma sus parámetros de la pila ---
         params_node = next((c for c in node.children if c.type == "PARAMETROS"), None)
         if params_node:
-            # Los sacamos en orden inverso (de último a primero)
             for p in reversed(params_node.children):
                 self.emit(f"STORE {p.value}")
         
@@ -1017,15 +1170,13 @@ class CodeGenerator:
                 self.generate(arg)
                 self.emit("PRINT")
         else:
-            # Funciones personalizadas
             for arg in node.children:
-                self.generate(arg) # Empuja los argumentos a la pila
+                self.generate(arg) 
             self.emit(f"CALL func_{node.value}")
 
-    # ESTRUCTURAS DE CONTROL DE FLUJO
     def gen_CONTROL_FLUJO(self, node):
         if node.value == "break" and self.loop_end_labels:
-            self.emit(f"JMP {self.loop_end_labels[-1]}") # Salta al final del ciclo/switch actual
+            self.emit(f"JMP {self.loop_end_labels[-1]}") 
 
     def gen_ESTRUCTURA_IF(self, node):
         cond = next((c for c in node.children if c.type == "CONDICION"), None)
@@ -1048,7 +1199,7 @@ class CodeGenerator:
         l_start = self.new_label()
         l_end = self.new_label()
         
-        self.loop_end_labels.append(l_end) # Guardamos la etiqueta final por si hay un break
+        self.loop_end_labels.append(l_end) 
         
         self.emit(f"LABEL {l_start}")
         cond = next((c for c in node.children if c.type == "CONDICION"), None)
@@ -1074,18 +1225,15 @@ class CodeGenerator:
                 l_body = self.new_label()
                 l_next_comparison = self.new_label()
                 
-                # 1. Bloque de Comparación
                 self.generate(expr)
-                self.generate(child.children[0]) # Valor del case
+                self.generate(child.children[0]) 
                 self.emit("EQ")
-                self.emit(f"JMPF {l_next_comparison}") # Si no coincide, salta a comparar el siguiente
+                self.emit(f"JMPF {l_next_comparison}") 
                 
-                # 2. Bloque de ejecución (aquí cae si coincide)
                 self.emit(f"LABEL {l_body}") 
                 body = next((c for c in child.children if c.type == "CUERPO_CASO"), None)
                 if body: self.generate(body)
                 
-                # Aquí es donde ocurre el fallthrough natural hacia el siguiente LABEL
                 self.emit(f"LABEL {l_next_comparison}")
                 
             elif child.type == "DEFAULT":
@@ -1109,8 +1257,8 @@ class CodeGenerator:
         self.generate(body)
         self.generate(cond)
         
-        self.emit(f"JMPF {l_end}") # Si es falso, salimos
-        self.emit(f"JMP {l_start}") # Si es verdadero, volvemos a dar la vuelta
+        self.emit(f"JMPF {l_end}") 
+        self.emit(f"JMP {l_start}") 
         self.emit(f"LABEL {l_end}")
         
         self.loop_end_labels.pop()
@@ -1137,7 +1285,6 @@ class CodeGenerator:
         
         self.loop_end_labels.pop()
 
-    # Delegadores
     def gen_BLOQUE(self, node): self.generic_gen(node)
     def gen_CONDICION(self, node): self.generic_gen(node)
     def gen_BLOQUE_TRUE(self, node): self.generic_gen(node)
@@ -1148,10 +1295,13 @@ class CodeGenerator:
     def gen_INICIALIZACION(self, node): self.generic_gen(node)
     def gen_INCREMENTO(self, node): self.generic_gen(node)
 
-import shlex # Necesario para leer strings con espacios correctamente
+import shlex 
 
 # ==========================================
-# BLOQUE 6: MÁQUINA VIRTUAL (VIRTUAL MACHINE)
+# ✧ BLOQUE 6: MÁQUINA VIRTUAL (VM) ✧
+# El motor de ejecución. Procesa las instrucciones generadas usando una pila 
+# y memoria en tiempo real. Cuenta con escudos contra división por cero, 
+# desbordamiento de arreglos y un límite de pasos anticongelamiento.
 # ==========================================
 class VirtualMachine:
     def __init__(self, asm_code):
@@ -1160,11 +1310,10 @@ class VirtualMachine:
         self.memory = {}
         self.ip = 0 
         self.labels = {}
-        self.call_stack = [] # ¡FIX: Pila de llamadas para funciones!
+        self.call_stack = [] 
         self.output_log = []
         
         for i, line in enumerate(self.instructions):
-            # Usamos shlex para no romper strings con espacios
             parts = shlex.split(line)
             if not parts: continue
             if parts[0] == "LABEL":
@@ -1173,14 +1322,19 @@ class VirtualMachine:
     def run(self):
         self.output_log.append(">>> INICIO DE EJECUCIÓN VM\n")
         
-        # Dentro del while de run() en VirtualMachine
+        MAX_STEPS = 10000  
+        steps = 0
+        
         while self.ip < len(self.instructions):
+            if steps > MAX_STEPS:
+                self.output_log.append(f"\n❌ RUNTIME ERROR: Límite de ejecución excedido ({MAX_STEPS} pasos). Se detuvo un posible bucle infinito.")
+                break
+            steps += 1
+
             line = self.instructions[self.ip]
             try:
                 parts = shlex.split(line)
             except ValueError:
-                # Si shlex falla por comillas mal cerradas o complejas, 
-                # hacemos un split básico y limpiamos las comillas a mano
                 parts = line.split(maxsplit=1)
             if not parts: self.ip += 1; continue
                     
@@ -1191,7 +1345,6 @@ class VirtualMachine:
                     val = parts[1]
                     if val == "true": self.stack.append(True)
                     elif val == "false": self.stack.append(False)
-                    # shlex ya quita las comillas automáticamente
                     elif not any(c.isalpha() for c in val) or '.' in val:
                         try: self.stack.append(float(val) if '.' in val else int(val))
                         except: self.stack.append(val)
@@ -1217,6 +1370,8 @@ class VirtualMachine:
                     self.stack.append(a * b)
                 elif op == "DIV":
                     b, a = self.stack.pop(), self.stack.pop()
+                    if b == 0:
+                        raise Exception("RUNTIME ERROR: División por cero.")
                     self.stack.append(a / b)
                 elif op == "NEG":
                     self.stack.append(-self.stack.pop())
@@ -1235,13 +1390,48 @@ class VirtualMachine:
                     self.stack.append(a > b)
                 elif op == "NOT":
                     self.stack.append(not self.stack.pop())
+                elif op == "STORE_ARR":
+                    index = self.stack.pop()
+                    value = self.stack.pop()
+                    array_name = parts[1]
+                    data = self.memory.get(array_name)
+                    
+                    if isinstance(data, list):
+                        if 0 <= index < len(data):
+                            data[index] = value
+                        else:
+                            raise Exception(f"RUNTIME ERROR: Desbordamiento de escritura en '{array_name}'. "
+                                            f"Índice {index} fuera de rango.")
+                    else:
+                        raise Exception(f"Error: '{array_name}' no es un arreglo.")
+                
+                elif op == "CLON":
+                    val = self.stack[-1]
+                    self.stack.append(val)
                 elif op == "AND":
                     b, a = self.stack.pop(), self.stack.pop()
                     self.stack.append(a and b)
                 elif op == "OR":
                     b, a = self.stack.pop(), self.stack.pop()
                     self.stack.append(a or b)
-                
+                elif op == "MAKE_ARR":
+                    size = int(parts[1])
+                    elements = []
+                    for _ in range(size):
+                        elements.insert(0, self.stack.pop())
+                    self.stack.append(elements)
+                elif op == "LOAD_ARR":
+                    index = self.stack.pop()
+                    array_name = parts[1]
+                    data = self.memory.get(array_name)
+                    
+                    if not isinstance(data, list):
+                        raise Exception(f"Error: '{array_name}' no es un arreglo.")
+                    if index < 0 or index >= len(data):
+                        raise Exception(f"RUNTIME ERROR: Desbordamiento en '{array_name}'. "
+                                        f"Índice {index} fuera de rango (Tamaño: {len(data)}).")
+                    
+                    self.stack.append(data[index])
                 elif op == "JMP":
                     self.ip = self.labels[parts[1]]
                     continue
@@ -1251,18 +1441,17 @@ class VirtualMachine:
                         self.ip = self.labels[parts[1]]
                         continue
                 
-                # --- FIX: IMPLEMENTACIÓN DE FUNCIONES ---
                 elif op == "CALL":
-                    self.call_stack.append(self.ip + 1) # Guardamos a dónde volver
-                    self.ip = self.labels[parts[1]] # Saltamos a la función
+                    self.call_stack.append(self.ip + 1) 
+                    self.ip = self.labels[parts[1]] 
                     continue
                 
                 elif op == "RET":
                     if self.call_stack:
-                        self.ip = self.call_stack.pop() # Volvemos a donde nos llamaron
+                        self.ip = self.call_stack.pop() 
                         continue
                     else:
-                        break # Fin del programa si no hay a dónde volver
+                        break 
 
                 elif op == "PRINT":
                     val = self.stack.pop()
@@ -1281,7 +1470,10 @@ class VirtualMachine:
         return "\n".join(self.output_log)
        
 # ==========================================
-# BLOQUE 7: GUI (INTERFAZ)
+# ✧ BLOQUE 7: INTERFAZ GRÁFICA (IDE) ✧
+# El entorno visual construido con Tkinter. Contiene el editor de código, 
+# sincronización de líneas, terminal de salida y pestañas para inspeccionar 
+# el resultado de cada fase del compilador. 
 # ==========================================
 class GreenCompilerGUI:
     def __init__(self, root):
@@ -1482,12 +1674,10 @@ class GreenCompilerGUI:
                         for err in sem_errors: self.output.insert(tk.END, f"✗ {err}\n")
                         self._update_tab(self.txt_intermedio, "Corrija los errores semánticos para generar código.")
                     else:
-                        # --- GENERADOR DE CÓDIGO INTERMEDIO ---
                         generator = CodeGenerator()
                         asm_code = generator.generate(ast_root)
                         self._update_tab(self.txt_intermedio, asm_code)
                         
-                        # --- NUEVO: MÁQUINA VIRTUAL (EJECUCIÓN) ---
                         vm = VirtualMachine(asm_code)
                         resultado_ejecucion = vm.run()
                         self._update_tab(self.txt_ejecucion, resultado_ejecucion)
