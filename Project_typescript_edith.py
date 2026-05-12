@@ -14,9 +14,10 @@ class Token:
 
 class ASTNode:
     """Clase para construir el Árbol Sintáctico Abstracto (AST)"""
-    def __init__(self, node_type, value=""):
+    def __init__(self, node_type, value="", line="N/A"):
         self.type = node_type
         self.value = value
+        self.line = line 
         self.children = []
 
     def add_child(self, child):
@@ -209,24 +210,23 @@ class Parser:
         self.log_sintactico += "SINTACTICO: <FIN_BLOQUE>\n"
         return block_node
 
-    # --- REGLAS DE FUNCIONES ---
     def parse_function(self):
         self.log_sintactico += "SINTACTICO: Analizando estructura 'function'\n"
-        self.advance() # Consumimos 'function'
+        line_num = self.current_token.line 
+        self.advance() 
         
         id_token = self.expect("Identifier")
-        node = ASTNode("DECLARACION_FUNCION", id_token.value)
+        node = ASTNode("DECLARACION_FUNCION", id_token.value, line_num) 
         
         self.expect("Delimiter", "(")
         params_node = ASTNode("PARAMETROS")
         
-        # Leer parámetros hasta encontrar el ')'
         while self.current_token.type != "EOF" and self.current_token.value != ")":
             param_id = self.expect("Identifier")
             self.expect("Delimiter", ":")
             param_type = self.expect("DataType")
             
-            p_node = ASTNode("PARAMETRO", param_id.value)
+            p_node = ASTNode("PARAMETRO", param_id.value, param_id.line)
             p_node.add_child(ASTNode("TIPO", param_type.value))
             params_node.add_child(p_node)
             
@@ -238,13 +238,11 @@ class Parser:
         self.expect("Delimiter", ")")
         node.add_child(params_node)
         
-        # Tipo de retorno opcional
         if self.current_token.value == ":":
             self.expect("Delimiter", ":")
             ret_type = self.expect("DataType")
             node.add_child(ASTNode("TIPO_RETORNO", ret_type.value))
             
-        # Cuerpo de la función
         body = self.parse_block()
         node.add_child(body)
         
@@ -260,7 +258,6 @@ class Parser:
         self.expect("Delimiter", ";")
         return node
 
-    # --- REGLAS DE FLUJO ---
     def parse_if(self):
         self.log_sintactico += "SINTACTICO: Analizando estructura 'if'\n"
         self.advance() 
@@ -397,19 +394,19 @@ class Parser:
         self.expect("Delimiter", "}")
         return node
 
-    # --- REGLA DE VARIABLES Y EXPRESIONES GENERALES ---
     def parse_expression_statement(self):
         expr = self.parse_expression()
         self.expect("Delimiter", ";")
         return expr
 
     def parse_declaration(self):
+        line_num = self.current_token.line 
         keyword = self.current_token.value
         self.log_sintactico += f"SINTACTICO: Analizando estructura '{keyword}'\n"
         self.advance()
 
         id_token = self.expect("Identifier")
-        node = ASTNode("DECLARACION", keyword)
+        node = ASTNode("DECLARACION", keyword, line_num)
         node.add_child(ASTNode("ID", id_token.value))
 
         if self.current_token.value == ":":
@@ -571,7 +568,6 @@ class Parser:
             return ASTNode("LITERAL", token.value)
             
         elif token.type == "Keyword" and token.value in ["console"]:
-            # Arreglo para permitir console.log vacío o con parámetros
             self.log_sintactico += f"SINTACTICO: Detectado objeto '{token.value}'\n"
             self.advance()
             self.expect("Delimiter", ".")
@@ -596,13 +592,11 @@ class Parser:
             self.log_sintactico += f"SINTACTICO: Push Identificador -> {id_val}\n"
             self.advance()
             
-            # --- MAGIA: Detectar si el identificador es una LLAMADA A FUNCIÓN ---
             if self.current_token.value == "(":
                 self.log_sintactico += f"SINTACTICO: Detectada llamada a función '{id_val}'\n"
-                self.advance() # Consumimos '('
+                self.advance() 
                 node = ASTNode("LLAMADA_FUNCION", id_val)
                 
-                # Leer argumentos (si hay)
                 if self.current_token.value != ")":
                     arg = self.parse_expression()
                     node.add_child(arg)
@@ -626,8 +620,283 @@ class Parser:
             self.errors.append(f"Error Sintáctico: Línea {token.line}. Expresión inválida o inesperada cerca de '{token.value}'.")
             raise ParseException()
 
+
 # ==========================================
-# BLOQUE 4: GUI (INTERFAZ)
+# BLOQUE 4: ANALIZADOR SEMÁNTICO (TIPOS Y FUNCIONES)
+# ==========================================
+class SymbolTable:
+    def __init__(self):
+        self.scopes = [{}]
+        self.current_scope_level = 0
+        self.symbols_flat_list = [] 
+
+    def enter_scope(self):
+        self.scopes.append({})
+        self.current_scope_level += 1
+
+    def exit_scope(self):
+        if self.current_scope_level > 0:
+            self.scopes.pop()
+            self.current_scope_level -= 1
+
+    # Inyectamos param_signature para recordar qué pide la función
+    def define(self, name, type_, value, line, param_signature=None):
+        if name in self.scopes[self.current_scope_level]:
+            return False 
+        scope_name = "Global" if self.current_scope_level == 0 else f"Local ({self.current_scope_level})"
+        self.scopes[self.current_scope_level][name] = {'type': type_, 'value': value, 'params': param_signature}
+        self.symbols_flat_list.append((name, type_, value, scope_name, line))
+        return True
+
+    def lookup(self, name):
+        for i in range(self.current_scope_level, -1, -1):
+            if name in self.scopes[i]:
+                return self.scopes[i][name]
+        return None 
+
+class SemanticAnalyzer:
+    def __init__(self):
+        self.sym_table = SymbolTable()
+        self.errors = []
+        self.loop_depth = 0 # Contador para saber si estamos dentro de un ciclo
+        self.current_func_ret_type = None # Para validar qué tipo debe tener el 'return'
+
+    def analyze(self, ast_root):
+        if ast_root: self.visit(ast_root)
+        return self.sym_table.symbols_flat_list, self.errors
+
+    def visit(self, node):
+        if not node: return "void"
+        method_name = f'visit_{node.type}'
+        visitor = getattr(self, method_name, self.generic_visit)
+        return visitor(node)
+
+    def generic_visit(self, node):
+        for child in node.children:
+            self.visit(child)
+        return "void"
+
+    def visit_PROGRAMA(self, node):
+        return self.generic_visit(node)
+
+    def visit_BLOQUE(self, node):
+        self.sym_table.enter_scope()
+        self.generic_visit(node)
+        self.sym_table.exit_scope()
+        return "void"
+
+    # --- CONTROL DE FLUJO Y LOOPS ---
+    def visit_ESTRUCTURA_WHILE(self, node):
+        self.loop_depth += 1
+        self.generic_visit(node)
+        self.loop_depth -= 1
+        return "void"
+
+    def visit_ESTRUCTURA_DO_WHILE(self, node):
+        self.loop_depth += 1
+        self.generic_visit(node)
+        self.loop_depth -= 1
+        return "void"
+
+    def visit_ESTRUCTURA_SWITCH(self, node):
+        self.loop_depth += 1
+        self.generic_visit(node)
+        self.loop_depth -= 1
+        return "void"
+
+    def visit_ESTRUCTURA_FOR(self, node):
+        self.sym_table.enter_scope()
+        self.loop_depth += 1
+        for child in node.children:
+            if child.type == "CUERPO_FOR":
+                block = next((c for c in child.children if c.type == "BLOQUE"), None)
+                if block:
+                    for gc in block.children: self.visit(gc)
+                else: self.visit(child)
+            else:
+                self.visit(child)
+        self.loop_depth -= 1
+        self.sym_table.exit_scope()
+        return "void"
+
+    def visit_CONTROL_FLUJO(self, node):
+        # Valida que el break/continue no ande suelto por ahí
+        if self.loop_depth == 0:
+            self.errors.append(f"Error Semántico: Línea {node.line}. '{node.value}' solo puede usarse dentro de un ciclo o switch.")
+        return "void"
+
+    # --- DECLARACIONES ---
+    def visit_DECLARACION(self, node):
+        id_node = next((c for c in node.children if c.type == "ID"), None)
+        type_node = next((c for c in node.children if c.type == "TIPO"), None)
+        val_node = next((c for c in node.children if c.type not in ["ID", "TIPO"]), None)
+
+        inferred_type = self.visit(val_node) if val_node else "undefined"
+        declared_type = type_node.value if type_node else inferred_type
+
+        if type_node and inferred_type != "undefined" and inferred_type != "any" and declared_type != inferred_type:
+            self.errors.append(f"Error Semántico: Línea {node.line}. No se puede asignar '{inferred_type}' a '{declared_type}'.")
+
+        if id_node:
+            if not self.sym_table.define(id_node.value, declared_type, "<expr>", node.line):
+                self.errors.append(f"Error Semántico: Línea {node.line}. Variable '{id_node.value}' ya declarada.")
+        return "void"
+
+    def visit_DECLARACION_FUNCION(self, node):
+        func_name = node.value
+        ret_node = next((c for c in node.children if c.type == "TIPO_RETORNO"), None)
+        ret_type = ret_node.value if ret_node else "void"
+        
+        # 1. Guardar la firma (tipos de parámetros)
+        params_node = next((c for c in node.children if c.type == "PARAMETROS"), None)
+        param_signature = []
+        if params_node:
+            for p in params_node.children:
+                p_type_node = next((c for c in p.children if c.type == "TIPO"), None)
+                param_signature.append(p_type_node.value if p_type_node else "any")
+
+        if not self.sym_table.define(func_name, f"function->{ret_type}", "func", node.line, param_signature):
+            self.errors.append(f"Error Semántico: Línea {node.line}. Función '{func_name}' ya declarada.")
+        
+        self.sym_table.enter_scope()
+        
+        # 2. Guardar estado de retorno para validar adentro
+        self.current_func_ret_type = ret_type 
+        
+        if params_node:
+            for p in params_node.children:
+                p_type = next((c for c in p.children if c.type == "TIPO"), None).value
+                self.sym_table.define(p.value, p_type, "param", p.line)
+        
+        block = next((c for c in node.children if c.type == "BLOQUE"), None)
+        if block:
+            for child in block.children: self.visit(child)
+            
+        self.sym_table.exit_scope()
+        self.current_func_ret_type = None # Limpiamos al salir
+        return "void"
+
+    def visit_RETURN(self, node):
+        # Evitar usar 'return' fuera de una función
+        if self.current_func_ret_type is None:
+            self.errors.append(f"Error Semántico: Línea {node.line}. 'return' no permitido fuera de una función.")
+            return "void"
+            
+        ret_type = "void"
+        if node.children:
+            ret_type = self.visit(node.children[0])
+            
+        # Comparar el tipo de retorno de la expresión con el prometido por la función
+        if ret_type != self.current_func_ret_type and self.current_func_ret_type != "any" and ret_type != "any":
+            self.errors.append(f"Error Semántico: Línea {node.line}. La función espera retornar '{self.current_func_ret_type}' pero retorna '{ret_type}'.")
+        return ret_type
+
+    def visit_LLAMADA_FUNCION(self, node):
+        if node.value == "console.log":
+            self.generic_visit(node)
+            return "void"
+            
+        sym = self.sym_table.lookup(node.value)
+        if not sym:
+            self.errors.append(f"Error Semántico: Línea {node.line}. Función '{node.value}' no definida.")
+            return "any"
+            
+        expected_params = sym.get('params') or []
+        args = node.children
+        
+        # 1. Validar cantidad de argumentos
+        if len(args) != len(expected_params):
+            self.errors.append(f"Error Semántico: Línea {node.line}. La función '{node.value}' espera {len(expected_params)} argumentos, pero recibió {len(args)}.")
+        else:
+            # 2. Validar el tipo de cada argumento
+            for i in range(len(args)):
+                arg_type = self.visit(args[i])
+                if expected_params[i] != "any" and arg_type != "any" and arg_type != expected_params[i]:
+                    self.errors.append(f"Error Semántico: Línea {node.line}. El argumento {i+1} de '{node.value}' debe ser '{expected_params[i]}', no '{arg_type}'.")
+                    
+        return sym['type'].split("->")[-1]
+
+    # --- EXPRESIONES BÁSICAS ---
+    def visit_LITERAL(self, node):
+        val = node.value
+        if val in ["true", "false"]: return "boolean"
+        if val.startswith('"') or val.startswith("'"): return "string"
+        if re.match(r'^\d', val): return "number"
+        return "any"
+
+    def visit_ID(self, node):
+        sym = self.sym_table.lookup(node.value)
+        if not sym:
+            self.errors.append(f"Error Semántico: Línea {node.line}. Variable '{node.value}' no definida.")
+            return "any"
+        return sym['type']
+
+    def visit_OPERACION(self, node):
+        left_t = self.visit(node.children[0])
+        right_t = self.visit(node.children[1])
+        
+        # NUEVO: Permitir concatenación de strings si el operador es '+'
+        if node.value == "+" and left_t == "string" and right_t == "string":
+            return "string"
+            
+        # Regla original: Todo lo demás requiere números
+        if left_t != "number" or right_t != "number":
+            self.errors.append(f"Error Semántico: Línea {node.line}. Operación '{node.value}' no válida entre '{left_t}' y '{right_t}'.")
+            return "any"
+            
+        return "number"
+
+    def visit_RELACIONAL(self, node):
+        left_t = self.visit(node.children[0])
+        right_t = self.visit(node.children[1])
+        if left_t != right_t:
+            self.errors.append(f"Error Semántico: Línea {node.line}. Comparación entre '{left_t}' y '{right_t}' no válida.")
+        return "boolean"
+
+    def visit_IGUALDAD(self, node):
+        self.visit(node.children[0])
+        self.visit(node.children[1])
+        return "boolean"
+
+    def visit_OPERACION_LOGICA(self, node):
+        left_t = self.visit(node.children[0])
+        right_t = self.visit(node.children[1])
+        if left_t != "boolean" or right_t != "boolean":
+            self.errors.append(f"Error Semántico: Línea {node.line}. Operador '{node.value}' requiere booleanos.")
+        return "boolean"
+
+    def visit_UNARIO(self, node):
+        t = self.visit(node.children[0])
+        if node.value == "!" and t != "boolean":
+            self.errors.append(f"Error Semántico: Línea {node.line}. '!' requiere booleano.")
+            return "boolean"
+        if node.value in ["-", "+", "++", "--"] and t != "number":
+            self.errors.append(f"Error Semántico: Línea {node.line}. '{node.value}' requiere número.")
+            return "number"
+        return t
+
+    def visit_POSTFIJO(self, node):
+        t = self.visit(node.children[0])
+        if t != "number":
+            self.errors.append(f"Error Semántico: Línea {node.line}. '{node.value}' requiere número.")
+        return "number"
+
+    def visit_ASIGNACION(self, node):
+        target_t = self.visit(node.children[0])
+        value_t = self.visit(node.children[1])
+        if target_t != value_t and target_t != "any":
+            self.errors.append(f"Error Semántico: Línea {node.line}. No se puede asignar '{value_t}' a '{target_t}'.")
+        return target_t
+
+    def visit_TERNARIO(self, node):
+        self.visit(node.children[0]) 
+        t1 = self.visit(node.children[1])
+        t2 = self.visit(node.children[2])
+        if t1 != t2: return "any"
+        return t1
+
+# ==========================================
+# BLOQUE 5: GUI (INTERFAZ)
 # ==========================================
 class GreenCompilerGUI:
     def __init__(self, root):
@@ -818,7 +1087,16 @@ class GreenCompilerGUI:
                 if sint_errors:
                     for err in sint_errors: self.output.insert(tk.END, f"✗ {err}\n")
                 else:
-                    self.output.insert(tk.END, "✓ Análisis Léxico y Sintáctico completado sin errores.\n")
+                    semantic = SemanticAnalyzer()
+                    symbols_list, sem_errors = semantic.analyze(ast_root)
+                    
+                    for sym in symbols_list:
+                        self.tab_semantico.insert("", tk.END, values=(sym[0], sym[1], sym[2], sym[3], sym[4]))
+                        
+                    if sem_errors:
+                        for err in sem_errors: self.output.insert(tk.END, f"✗ {err}\n")
+                    else:
+                        self.output.insert(tk.END, "✓ Análisis Léxico, Sintáctico y Semántico completados sin errores.\n")
             else:
                 for err in lex_errors: self.output.insert(tk.END, f"✗ {err}\n")
                 self._update_tab(self.txt_sintactico, "El Parser no se ejecutó debido a errores léxicos previos.")
